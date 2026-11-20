@@ -130,6 +130,20 @@ Using the synthetic momentum example above, buy-and-hold also bought nine shares
 
 This comparison uses price-only SPY bars. Historical ETF total returns require dividend and split treatment and defensible price provenance. Yahoo's split-adjusted data remains outside the RAW execution contract. Synthetic results verify the implementation and offer no evidence of historical outperformance or statistical significance.
 
+## SPY short-term mean reversion
+
+Pass `short_term_mean_reversion` from `trading_research.mean_reversion` to `run_backtest`. The research hypothesis is that a large short-term decline may be followed by a partial reversal. The entry rule uses six observed SPY closes and targets 100% SPY when `current_close / close_5_observations_ago − 1 <= -0.03`. It tests the equivalent exact Decimal price inequality using positive finite RAW closes.
+
+At each backtest close, `SessionContext.execution` contains an immutable portfolio snapshot, accepted pending orders, and that session's opening outcomes. `last_order_outcome(symbol)` searches only outcomes known through that close. Market-only `generate_signals` contexts have no execution feedback. The mean-reversion rule requires the backtest context.
+
+A committed SPY BUY starts the clock. Its session counts as the first held close. The fifth observed SPY close while holding emits an explicit zero target, eligible at the next observed SPY open. Missing SPY bars do not advance the count, and pending entry or exit orders block new signals. The existing valuation policy still requires a current close for every held instrument when another instrument creates a backtest session.
+
+An entry rejection leaves the portfolio flat. Starting after the rejection session, a new entry requires the trailing return to cross from above −3% back to −3% or below. A rejected exit leaves the position open with its rejection recorded and no automatic retry. A successful exit returns the strategy to its flat entry rule.
+
+In a synthetic run starting at $1,000, a $97 sixth close versus $100 five observations earlier triggered a BUY for ten shares. The next observed open was $96, giving a $96.24 fill with a 25 bp adjustment. After five held closes, a zero target led to a $100.7475 SELL at the following observed open. With $1.25 per fill, final cash and equity were $1,042.575, with zero shares.
+
+The −3% threshold and five-session holding period are uncalibrated research assumptions. Synthetic inputs establish no profitability or transaction-cost advantage. Selection and overfitting risk remain. Real ETF research still requires defensible corporate-action and dividend treatment.
+
 ## Yahoo Finance daily history
 
 Use this command from the repository root once you have permission for automated acquisition and local storage. The requested range is inclusive, so the command sends an exclusive Yahoo end date of 2026-01-01.

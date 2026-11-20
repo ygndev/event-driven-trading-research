@@ -25,7 +25,12 @@ from .portfolio import (
     mark_to_market,
 )
 from .replay import MarketEvent, MarketOpen, replay_daily_bars
-from .signals import SessionContext, SignalEvent, _evaluate_strategy
+from .signals import (
+    ExecutionFeedback,
+    SessionContext,
+    SignalEvent,
+    _evaluate_strategy,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,6 +101,7 @@ def run_backtest(
     )
     pending: dict[str, MarketOrder] = {}
     close_events: list[MarketEvent] = []
+    opening_outcomes: list[OrderSnapshot] = []
     context: SessionContext | None = None
     observed_symbols: set[str] = set()
     target_weights: dict[str, int | float] = {}
@@ -118,17 +124,24 @@ def run_backtest(
             snapshot = coordinator.order_snapshot(order.order_id)
             proposal = execution.propose_at_open(snapshot, opening)
             if proposal is not None:
-                coordinator.execute(order.order_id, proposal)
+                outcome = coordinator.execute(order.order_id, proposal)
+                opening_outcomes.append(outcome)
                 del pending[order.order_id]
 
     def finish_session(session: date) -> None:
         nonlocal context
-        context = SessionContext(session, tuple(close_events), context)
+        portfolio = coordinator.portfolio_snapshot()
+        feedback = ExecutionFeedback(
+            portfolio, tuple(pending.values()), tuple(opening_outcomes)
+        )
+        context = SessionContext(
+            session, tuple(close_events), context, execution=feedback
+        )
         close_events.clear()
+        opening_outcomes.clear()
         emitted = _evaluate_strategy(strategy, context, observed_symbols)
         signals.extend(emitted)
 
-        portfolio = coordinator.portfolio_snapshot()
         if emitted:
             target_weights.update(
                 (signal.symbol, signal.target_exposure) for signal in emitted

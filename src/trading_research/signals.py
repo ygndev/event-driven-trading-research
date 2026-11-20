@@ -5,7 +5,18 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 
 from .daily_bars import DailyBar, DatasetMetadata
+from .orders import MarketOrder, OrderSnapshot
+from .portfolio import PortfolioSnapshot
 from .replay import MarketEvent, replay_daily_bars
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionFeedback:
+    """Portfolio, pending orders, and opening outcomes known at this close."""
+
+    portfolio: PortfolioSnapshot
+    pending_orders: tuple[MarketOrder, ...]
+    outcomes: tuple[OrderSnapshot, ...]
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -15,6 +26,7 @@ class SessionContext:
     session_date: date
     events: tuple[MarketEvent, ...]
     _previous: "SessionContext | None" = field(default=None, repr=False)
+    execution: ExecutionFeedback | None = field(default=None, kw_only=True)
 
     def history(self, symbol: str) -> tuple[MarketEvent, ...]:
         """Return a symbol's events through this session, oldest first."""
@@ -26,6 +38,17 @@ class SessionContext:
             )
             context = context._previous
         return tuple(reversed(events))
+
+    def last_order_outcome(self, symbol: str) -> OrderSnapshot | None:
+        """Return the latest fill or rejection known at this session's close."""
+        context: SessionContext | None = self
+        while context is not None:
+            if context.execution is not None:
+                for outcome in reversed(context.execution.outcomes):
+                    if outcome.order.symbol == symbol:
+                        return outcome
+            context = context._previous
+        return None
 
 
 @dataclass(frozen=True, slots=True)
