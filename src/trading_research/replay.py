@@ -15,6 +15,16 @@ from .daily_bars import (
 
 
 @dataclass(frozen=True, slots=True)
+class MarketOpen:
+    """The opening observation available before a daily bar is complete."""
+
+    symbol: str
+    session_date: date
+    price: int | float
+    adjustment: PriceAdjustment
+
+
+@dataclass(frozen=True, slots=True)
 class MarketEvent:
     """A completed-session observation and its declared price convention."""
 
@@ -27,12 +37,16 @@ def replay_daily_bars(
     on_event: Callable[[MarketEvent], None],
     *,
     on_session_end: Callable[[date], None] | None = None,
+    on_session_open: Callable[
+        [date, tuple[MarketOpen, ...]], None
+    ] | None = None,
 ) -> None:
     """Validate all datasets, then deliver events by session date and symbol.
 
     Each callback runs at the conceptual end of the bar's session. It receives
     only that event, and replay advances after the callback returns.
-    The optional session callback follows all market events for that date.
+    The session-start callback sees only opening observations. The session-end
+    callback follows all completed market events for that date.
     """
     streams: list[tuple[DailyBar, ...]] = []
     adjustments: dict[str, PriceAdjustment] = {}
@@ -53,6 +67,15 @@ def replay_daily_bars(
 
     ordered = merge(*streams, key=lambda bar: (bar.session_date, bar.symbol))
     for session, bars in groupby(ordered, key=lambda bar: bar.session_date):
+        if on_session_open is not None:
+            bars = tuple(bars)
+            opens = tuple(
+                MarketOpen(
+                    bar.symbol, session, bar.open, adjustments[bar.symbol]
+                )
+                for bar in bars
+            )
+            on_session_open(session, opens)
         for bar in bars:
             on_event(MarketEvent(bar, adjustments[bar.symbol]))
         if on_session_end is not None:

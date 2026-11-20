@@ -2,6 +2,7 @@
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import date
 from decimal import Decimal, localcontext
 
 from ._money import USD_CONTEXT, Money, decimal_amount, to_decimal
@@ -11,7 +12,15 @@ from .daily_bars import (
     PriceAdjustment,
     validate_daily_bars,
 )
-from .orders import Fill, MarketOrder, OrderSide, OrderSnapshot, OrderState
+from .orders import (
+    Fill,
+    MarketOrder,
+    OrderSide,
+    OrderSnapshot,
+    OrderState,
+    _validate_session,
+)
+from .replay import MarketOpen
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,6 +61,25 @@ def _validate_proposal_price(proposal: ProposedExecution) -> None:
         )
 
 
+def _validate_market(
+    order: MarketOrder, symbol: str, adjustment: PriceAdjustment
+) -> None:
+    if symbol != order.symbol:
+        raise ValueError(
+            f"order symbol {order.symbol!r} does not match "
+            f"dataset symbol {symbol!r}"
+        )
+    if adjustment is not PriceAdjustment.RAW:
+        raise ValueError("execution requires data declared RAW")
+
+
+def _eligible(order: MarketOrder, session: date) -> bool:
+    earliest = order.earliest_execution_session
+    return session > order.decision_session and (
+        earliest is None or session >= earliest
+    )
+
+
 class NextOpenExecution:
     """Price each order at most once per sequential simulation run."""
 
@@ -75,6 +103,45 @@ class NextOpenExecution:
         A bare order represents acceptance confirmed by the caller. A supplied
         ledger snapshot must be ACCEPTED.
         """
+        order = self._accepted_order(order)
+        if not isinstance(metadata, DatasetMetadata):
+            raise ValueError("execution requires DatasetMetadata")
+        _validate_market(order, metadata.symbol, metadata.adjustment)
+        if not isinstance(bars, Sequence) or isinstance(
+            bars, (str, bytes, bytearray)
+        ):
+            raise ValueError("bars must be a sequence of DailyBar records")
+        observations = tuple(bars)
+        if not observations:
+            return None
+        validate_daily_bars(observations, metadata)
+
+        for bar in observations:
+            if _eligible(order, bar.session_date):
+                return self._price(
+                    order, bar.session_date, to_decimal(bar.open)
+                )
+        return None
+
+    def propose_at_open(
+        self, order: OrderSnapshot, opening: MarketOpen
+    ) -> ProposedExecution | None:
+        """Price an accepted order from its current opening observation."""
+        if not isinstance(order, OrderSnapshot):
+            raise ValueError("opening execution requires an order snapshot")
+        if not isinstance(opening, MarketOpen):
+            raise ValueError("opening execution requires a MarketOpen")
+        market_order = self._accepted_order(order)
+        _validate_market(market_order, opening.symbol, opening.adjustment)
+        _validate_session(opening.session_date, "opening session")
+        if not _eligible(market_order, opening.session_date):
+            return None
+        price = decimal_amount(opening.price, "opening price")
+        return self._price(market_order, opening.session_date, price)
+
+    def _accepted_order(
+        self, order: MarketOrder | OrderSnapshot
+    ) -> MarketOrder:
         if isinstance(order, OrderSnapshot):
             if order.state is not OrderState.ACCEPTED:
                 raise ValueError(
@@ -85,50 +152,24 @@ class NextOpenExecution:
             raise ValueError("execution requires a MarketOrder")
         if order.order_id in self._proposed:
             raise ValueError(f"order {order.order_id!r} was already proposed")
+        return order
 
-        if not isinstance(metadata, DatasetMetadata):
-            raise ValueError("execution requires DatasetMetadata")
-        if metadata.symbol != order.symbol:
-            raise ValueError(
-                f"order symbol {order.symbol!r} does not match "
-                f"dataset symbol {metadata.symbol!r}"
-            )
-        if metadata.adjustment is not PriceAdjustment.RAW:
-            raise ValueError("execution requires data declared RAW")
-        if not isinstance(bars, Sequence) or isinstance(
-            bars, (str, bytes, bytearray)
-        ):
-            raise ValueError("bars must be a sequence of DailyBar records")
-        observations = tuple(bars)
-        if not observations:
-            return None
-        validate_daily_bars(observations, metadata)
-
-        earliest = order.earliest_execution_session
-        for bar in observations:
-            session = bar.session_date
-            if session <= order.decision_session:
-                continue
-            if earliest is not None and session < earliest:
-                continue
-
-            opening_price = to_decimal(bar.open)
-            price = _adjusted_price(
-                opening_price, self._adjustment_bps, order.side
-            )
-
-            fill = Fill(
-                order_id=order.order_id,
-                symbol=order.symbol,
-                execution_session=session,
-                side=order.side,
-                quantity=order.quantity,
-                price=price,
-            )
-            proposal = ProposedExecution(
-                fill, self._commission, opening_price, self._adjustment_bps
-            )
-            self._proposed.add(order.order_id)
-            return proposal
-
-        return None
+    def _price(
+        self, order: MarketOrder, session: date, opening_price: Decimal
+    ) -> ProposedExecution:
+        price = _adjusted_price(
+            opening_price, self._adjustment_bps, order.side
+        )
+        fill = Fill(
+            order_id=order.order_id,
+            symbol=order.symbol,
+            execution_session=session,
+            side=order.side,
+            quantity=order.quantity,
+            price=price,
+        )
+        proposal = ProposedExecution(
+            fill, self._commission, opening_price, self._adjustment_bps
+        )
+        self._proposed.add(order.order_id)
+        return proposal

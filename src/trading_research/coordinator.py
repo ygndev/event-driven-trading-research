@@ -1,7 +1,9 @@
 """Commit proposed fills to a consistent pair of in-memory ledgers."""
 
+from collections.abc import Iterable
+
 from .execution import ProposedExecution, _validate_proposal_price
-from .orders import OrderLedger, OrderSnapshot, OrderState
+from .orders import MarketOrder, OrderLedger, OrderSnapshot, OrderState
 from .portfolio import (
     PortfolioLedger,
     PortfolioRejection,
@@ -27,6 +29,15 @@ class ExecutionCoordinator:
         if order_fills != booked_fills:
             raise ValueError("order and portfolio histories disagree on fills")
         self._ledgers = (orders, portfolio)
+
+    def submit_orders(self, orders: Iterable[MarketOrder]) -> None:
+        """Register and accept a batch in order, without booking any cash."""
+        order_ledger, portfolio = self._ledgers
+        staged = order_ledger._copy()
+        for order in orders:
+            staged.register(order)
+            staged.accept(order.order_id)
+        self._ledgers = (staged, portfolio)
 
     def execute(
         self, order_id: str, proposal: ProposedExecution

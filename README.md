@@ -4,7 +4,7 @@ The research goal is to study how the timing of market events, order execution, 
 
 Planned work includes historical market data ingestion and replay, event-driven backtesting, simulated order fills and transaction costs, and reproducible experiment reporting.
 
-The current repository contains a daily market data contract, a Yahoo Finance ingestion workflow, deterministic daily replay, a session-level signal interface, an order ledger, portfolio accounting, target-weight order planning, and coordinated open-price execution. Strategies and backtest integration are pending.
+The current repository contains a daily market data contract, a Yahoo Finance ingestion workflow, deterministic daily replay, a session-level signal interface, an order ledger, portfolio accounting, target-weight order planning, and coordinated open-price execution. A deterministic daily backtest connects these components for synthetic research.
 
 ## Daily market data
 
@@ -73,13 +73,28 @@ A `ProposedExecution` contains the `Fill`, commission, reference open, and basis
 
 ## Coordinated execution
 
-Initialize an `ExecutionCoordinator(orders, portfolio)` from `trading_research.coordinator` with the standalone ledgers. Register and accept the intended orders before taking this initial copy. Existing fills must agree across both histories in transaction order. The coordinator owns its ledger copies and exposes their state through `order_snapshot`, `order_history`, `portfolio_snapshot`, and `portfolio_history`.
+Initialize an `ExecutionCoordinator(orders, portfolio)` from `trading_research.coordinator` with the standalone ledgers. Seed it with existing orders or use `submit_orders(orders)` to register and accept a batch during a run. Existing fills must agree across both histories in transaction order. The coordinator owns its ledger copies and exposes their state through `order_snapshot`, `order_history`, `portfolio_snapshot`, and `portfolio_history`.
 
 Use the current order snapshot to price a proposal with `NextOpenExecution`, then pass it to `execute(order_id, proposal)`. The coordinator checks that the proposed price follows the model formula and delegates lifecycle, identity, timing, and funds checks to the existing ledgers. It stages both updates on detached copies and publishes the pair together. One portfolio transaction carries the fill and the supplied commission. The proposal's commission is informational.
 
 Insufficient cash or holdings and commissions exceeding sale proceeds produce a terminal REJECTED order with a reason. The portfolio is unchanged. Invalid proposals or unexpected exceptions preserve both ledgers and propagate to the caller. An unexpected staging failure can be retried using the same proposal.
 
 Calls are processed sequentially in the order supplied. Earlier bookings change cash and holdings available to later orders. Atomicity applies to this in-memory coordinator under sequential access. Its state is lost on process exit, and callers must serialize access. The coordinator uses the proposal's supplied opening price and execution session, and relies on the execution model for observed-bar selection. Order planning is separate from the coordinator. Settlement, liquidity, and live brokerage remain outside this workflow.
+
+## Daily backtest
+
+Call `run_backtest(datasets, strategy, initial_cash=..., adjustment_bps=..., commission=...)` from `trading_research.backtest`. Supply validated RAW-declared daily-bar datasets and a callable that returns signals for each completed session. The test fixtures use synthetic RAW bars as a controlled assumption about the price basis.
+
+For every observed session, replay runs these phases in order.
+
+1. **Open.** Replay delivers opening observations containing only symbol, session, price, and adjustment basis. Pending orders with a matching eligible open are proposed at that price using the configured adjustment and commission. The coordinator commits SELL before BUY, then by symbol and decision date. Each fill and fee is recorded once across the coordinated histories. A terminal rejection leaves the portfolio unchanged.
+2. **Completed observations.** Replay delivers all completed bars for the session in symbol order. The strategy context can access that session and completed history through that date.
+3. **Decision.** The strategy runs once. A nonempty signal batch updates the retained desired weights and sizes a complete allocation at current closes. Omitted symbols retain their prior weights, and an empty batch triggers no replanning. New orders are registered and accepted without reserving cash. They are eligible only after the decision session.
+4. **Valuation.** Record immutable cash, holdings, fees, and equity using current closes. A missing close for any holding raises an error. History never supplies a substitute mark.
+
+Pending orders stay accepted until the next matching eligible opening observation. Filled and rejected orders leave the pending set. The result reports outstanding orders at dataset end, along with sessions, signals, order history, transactions, fills, and rejection reasons. There is no forced liquidation.
+
+The runner uses the union of observed session dates. It assumes supplied opens are usable references and uses an idealized full-fill price, with no exchange calendar, liquidity or settlement model. Price gaps, fees, and whole-share constraints can leave actual holdings away from the desired allocation. Coordination is in-memory and sequential. An unexpected error aborts the run, and the failed coordinated fill leaves its ledger pair as it was before the attempt.
 
 ## Yahoo Finance daily history
 

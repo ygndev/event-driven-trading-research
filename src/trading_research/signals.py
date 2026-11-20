@@ -53,6 +53,36 @@ class SignalEvent:
             )
 
 
+def _evaluate_strategy(
+    strategy: Callable[[SessionContext], Iterable[SignalEvent]],
+    context: SessionContext,
+    observed_symbols: set[str],
+) -> tuple[SignalEvent, ...]:
+    session = context.session_date
+    observed_symbols.update(event.bar.symbol for event in context.events)
+    emitted = strategy(context)
+    if not isinstance(emitted, Iterable):
+        raise ValueError(f"{session}: strategy must return iterable signals")
+
+    batch: dict[str, SignalEvent] = {}
+    for signal in emitted:
+        if not isinstance(signal, SignalEvent):
+            raise ValueError(f"{session}: expected a SignalEvent")
+        symbol = signal.symbol
+        if signal.decision_session != session:
+            raise ValueError(
+                f"{symbol}: decision session {signal.decision_session} "
+                f"must match completed session {session}"
+            )
+        if symbol not in observed_symbols:
+            raise ValueError(f"{session}: unknown instrument {symbol!r}")
+        if symbol in batch:
+            raise ValueError(f"{session}: duplicate signal for {symbol!r}")
+        batch[symbol] = signal
+
+    return tuple(batch[symbol] for symbol in sorted(batch))
+
+
 def generate_signals(
     datasets: Iterable[tuple[DatasetMetadata, Sequence[DailyBar]]],
     strategy: Callable[[SessionContext], Iterable[SignalEvent]],
@@ -67,30 +97,7 @@ def generate_signals(
         nonlocal context
         context = SessionContext(session, tuple(pending), context)
         pending.clear()
-        observed_symbols.update(event.bar.symbol for event in context.events)
-        emitted = strategy(context)
-        if not isinstance(emitted, Iterable):
-            raise ValueError(
-                f"{session}: strategy must return iterable signals"
-            )
-
-        batch: dict[str, SignalEvent] = {}
-        for signal in emitted:
-            if not isinstance(signal, SignalEvent):
-                raise ValueError(f"{session}: expected a SignalEvent")
-            symbol = signal.symbol
-            if signal.decision_session != session:
-                raise ValueError(
-                    f"{symbol}: decision session {signal.decision_session} "
-                    f"must match completed session {session}"
-                )
-            if symbol not in observed_symbols:
-                raise ValueError(f"{session}: unknown instrument {symbol!r}")
-            if symbol in batch:
-                raise ValueError(f"{session}: duplicate signal for {symbol!r}")
-            batch[symbol] = signal
-
-        signals.extend(batch[symbol] for symbol in sorted(batch))
+        signals.extend(_evaluate_strategy(strategy, context, observed_symbols))
 
     replay_daily_bars(datasets, pending.append, on_session_end=evaluate)
     return tuple(signals)
