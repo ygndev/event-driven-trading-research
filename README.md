@@ -4,7 +4,7 @@ The research goal is to study how the timing of market events, order execution, 
 
 Planned work includes historical market data ingestion and replay, event-driven backtesting, simulated order fills and transaction costs, and reproducible experiment reporting.
 
-The current repository contains a daily market data contract, a Yahoo Finance ingestion workflow, and offline tests. Strategies, backtesting, and execution simulation are pending.
+The current repository contains a daily market data contract, a Yahoo Finance ingestion workflow, and deterministic daily replay. Strategies, backtesting, and execution simulation are pending.
 
 ## Daily market data
 
@@ -14,6 +14,14 @@ Import `DailyBar`, `DatasetMetadata`, `PriceAdjustment`, and `validate_daily_bar
 - `DatasetMetadata` records the source, symbol, adjustment convention, timezone-aware retrieval time, and optional source version. Retrieval time describes when the data was obtained. The contract makes no claim about when historical data became available.
 - `PriceAdjustment` distinguishes raw (unadjusted), split-adjusted, and total-return-adjusted prices. Use a separate dataset for each convention. The value records the source's claim. Validation cannot infer or verify the adjustment convention from OHLCV values. Adjusted prices should not be treated as directly executable.
 - Call `validate_daily_bars(bars, metadata)` on parsed records before use. It requires a nonempty sequence for the exact metadata symbol, checks OHLCV values and price relationships, and requires unique session dates in ascending order. It raises `ValueError` on the first problem, with the row number for row errors. It accepts gaps without consulting a market calendar and leaves records as supplied.
+
+## Daily replay
+
+Call `replay_daily_bars(datasets, on_event)` from `trading_research.replay`. Pass one `(DatasetMetadata, sequence_of_bars)` pair per symbol. Replay snapshots and validates every sequence before invoking the callback. Duplicate symbols, duplicate sessions, invalid bars, and out-of-order input fail before delivery. Gaps are allowed.
+
+Replay advances by exchange session date. After the conceptual end of each session, it delivers each available bar in lexicographic symbol order. The tie-break is a replay convention and conveys no intraday ordering. Each callback receives only an immutable `MarketEvent` with the bar and its declared price adjustment. Replay advances after the callback returns and provides no history or lookahead interface.
+
+The session boundary models when a completed daily bar can first be used in this replay. It supplies no exact close or delivery time and makes no point-in-time availability claim about a provider. Retrieval timestamps remain dataset provenance.
 
 ## Yahoo Finance daily history
 
