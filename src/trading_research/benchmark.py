@@ -226,12 +226,18 @@ def _compare_spy_runs(
     commission: Decimal,
 ) -> tuple[tuple[BenchmarkRun, ...], BenchmarkRun, BenchmarkRun]:
     datasets = ((metadata, bars),)
+    anchor_bar = bars[anchor_index]
 
     def run(
         strategy: Callable[[SessionContext], Iterable[SignalEvent]],
     ) -> BacktestResult:
+        def active(context: SessionContext) -> Iterable[SignalEvent]:
+            if context.session_date < anchor_bar.session_date:
+                return ()
+            return strategy(context)
+
         return run_backtest(
-            datasets, strategy, initial_cash=initial_cash,
+            datasets, active, initial_cash=initial_cash,
             adjustment_bps=adjustment_bps, commission=commission,
         )
 
@@ -346,30 +352,36 @@ def compare_spy_common_window(
     commission: Money,
 ) -> CommonWindowBenchmarkComparison:
     """Compare both fixed SPY strategies from the 64th observed close."""
-    observations, capital, bps, fee = _comparison_inputs(
-        metadata, bars, _MOMENTUM_LOOKBACK, initial_cash,
-        adjustment_bps, commission,
+    return _compare_spy_window(
+        metadata, bars, anchor_index=_MOMENTUM_LOOKBACK,
+        initial_cash=initial_cash, adjustment_bps=adjustment_bps,
+        commission=commission,
     )
-    anchor_bar = observations[_MOMENTUM_LOOKBACK]
 
-    def activated_mean_reversion(
-        context: SessionContext,
-    ) -> tuple[SignalEvent, ...]:
-        if context.session_date < anchor_bar.session_date:
-            return ()
-        return short_term_mean_reversion(context)
 
+def _compare_spy_window(
+    metadata: DatasetMetadata,
+    bars: Sequence[DailyBar],
+    *,
+    anchor_index: int,
+    initial_cash: Money,
+    adjustment_bps: Money,
+    commission: Money,
+) -> CommonWindowBenchmarkComparison:
+    observations, capital, bps, fee = _comparison_inputs(
+        metadata, bars, anchor_index, initial_cash, adjustment_bps, commission,
+    )
     (momentum, mean_reversion), holding, cash = _compare_spy_runs(
         metadata, observations,
         (
             ("SPY momentum", time_series_momentum),
-            ("SPY mean reversion", activated_mean_reversion),
+            ("SPY mean reversion", short_term_mean_reversion),
         ),
-        anchor_index=_MOMENTUM_LOOKBACK, initial_cash=capital,
+        anchor_index=anchor_index, initial_cash=capital,
         adjustment_bps=bps, commission=fee,
     )
     return CommonWindowBenchmarkComparison(
-        start_session=anchor_bar.session_date,
+        start_session=observations[anchor_index].session_date,
         end_session=observations[-1].session_date,
         initial_cash=capital,
         adjustment_bps=bps,

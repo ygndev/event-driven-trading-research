@@ -189,6 +189,26 @@ Outstanding orders stay visible in each comparison. A rejected mean-reversion ex
 
 The daily-bar simulation assumes full fills at modeled next-open prices and marks open positions at the final close. These tests establish simulation behavior on synthetic prices. They provide no evidence of statistical significance or real-world profitability.
 
+## SPY chronological research protocol
+
+Call `evaluate_spy_research_periods(metadata, bars, initial_cash=..., adjustment_bps=..., commission=...)` from `trading_research.chronology`. The predefined research windows have inclusive session-date boundaries.
+
+| Research period | Start | End |
+|---|---|---|
+| Development | 2010-01-01 | 2018-12-31 |
+| Validation | 2019-01-01 | 2022-12-31 |
+| Final test | 2023-01-01 | 2025-12-31 |
+
+Each period uses the ordered SPY history through its last available permitted close. The anchor is the first observed close within the period with at least 63 earlier completed observations. If the supplied history starts late, early in-period observations can supply warm-up. A period with no observations or no eligible anchor raises an error. Session dates come from the input, so weekends, holidays, and missing sessions do not generate synthetic observations. The optional `periods` argument accepts explicit chronological, non-overlapping ranges.
+
+Replay builds indicator history during warm-up. Trading and scoring begin at the same anchor with fresh ledgers and identical uninvested capital across all four portfolios. Momentum keeps its 64th, 85th, 106th observation schedule from the start of the supplied history and stays in cash until an in-period scheduled decision. Mean reversion can act at the anchor using its five-interval history. Buy-and-hold makes its one allocation decision at the anchor, and cash stays uninvested. Orders size at a decision close and can first fill at the next eligible observed opening.
+
+The period ends with a mark at its last observed close. Cash and holdings are retained in the result and each later period starts independently. A mean-reversion position can be open because fewer than five held closes have elapsed or because its exit order still awaits an open. Both are incomplete round trips. The result exposes the marked position and any outstanding order without creating a closing transaction. A rejected exit within the period raises `MeanReversionExitRejected`.
+
+Each result exposes the configured `period`, `warmup_observation_count`, and `comparison`. The count includes every supplied observation before the anchor. The comparison's `start_session` and `end_session` are the actual scored dates. It retains execution assumptions, order histories, and performance metrics, including undefined values and the reason when CAGR is unavailable. Returns are evaluated separately for each period.
+
+The windows are fixed research choices. Keep the final-test window reserved for evaluation after rules and assumptions are fixed, since using it for selection compromises the holdout. Executable tests use fabricated prices and do not establish economic out-of-sample performance. A RAW declaration alone cannot verify real-market provenance. Historical ETF research also requires defensible treatment of splits and dividends.
+
 ## Yahoo Finance daily history
 
 Use this command from the repository root once you have permission for automated acquisition and local storage. The requested range is inclusive, so the command sends an exclusive Yahoo end date of 2026-01-01.
