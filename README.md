@@ -144,6 +144,18 @@ In a synthetic run starting at $1,000, a $97 sixth close versus $100 five observ
 
 The −3% threshold and five-session holding period are uncalibrated research assumptions. Synthetic inputs establish no profitability or transaction-cost advantage. Selection and overfitting risk remain. Real ETF research still requires defensible corporate-action and dividend treatment.
 
+## SPY mean-reversion benchmark comparison
+
+Call `compare_spy_mean_reversion_benchmarks(metadata, bars, initial_cash=..., adjustment_bps=..., commission=...)` from `trading_research.benchmark` with one RAW-declared SPY dataset. The sixth observed close is the common evaluation anchor, including when the fixed rule stays flat. All three runs share the observations, initial USD capital, execution costs, and final observed session. The scored equity paths begin with uninvested capital at the anchor close. The first five observations supply warm-up history and contribute no trades or metrics. Missing observations remain gaps.
+
+Buy-and-hold sets one 100% target at the anchor close. Both trading runs size whole shares from the decision close and use the same adjusted next eligible observed open and fixed commission per committed fill. Buy-and-hold keeps residual cash and marks its shares at the final close without a sale or exit commission. Cash earns zero interest and places no orders.
+
+Each run exposes the existing performance evaluation. Return and drawdown describe the marked equity path. Turnover uses committed notional over mean closing equity, and average long exposure includes the uninvested anchor. The evaluator retains its rules for undefined CAGR, volatility, and Sharpe. Return differences are in percentage points versus buy-and-hold and cash. Read the cash comparison from `return_difference_pp_vs_cash`. The final equity difference versus buy-and-hold is in USD.
+
+The comparison preserves each run's `backtest.outstanding_orders` and final holdings. When `outstanding_exit` contains an accepted SELL, the equity and metrics include the marked open position and the round trip is incomplete. A rejected exit raises `MeanReversionExitRejected` and produces no benchmark comparison. Rejected entries follow the strategy's fresh-crossing rule.
+
+Momentum's separate comparison starts at observation 64. A future strategy-to-strategy study needs an identical out-of-sample period. Synthetic cases check timing, costs, and accounting and establish no historical edge or statistical significance. ETF total-return research still needs defensible corporate-action, dividend, and price-provenance policies.
+
 ## Yahoo Finance daily history
 
 Use this command from the repository root once you have permission for automated acquisition and local storage. The requested range is inclusive, so the command sends an exclusive Yahoo end date of 2026-01-01.
