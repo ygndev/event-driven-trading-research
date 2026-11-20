@@ -4,7 +4,7 @@ The research goal is to study how the timing of market events, order execution, 
 
 Planned work includes historical market data ingestion and replay, event-driven backtesting, simulated order fills and transaction costs, and reproducible experiment reporting.
 
-The current repository contains a daily market data contract, a Yahoo Finance ingestion workflow, deterministic daily replay, a session-level signal interface, an order ledger, portfolio accounting, target-weight order planning, and coordinated open-price execution. A deterministic daily backtest connects these components for synthetic research.
+The current repository contains a daily market data contract, a Yahoo Finance ingestion workflow, deterministic daily replay, a session-level signal interface, an order ledger, portfolio accounting, target-weight order planning, and coordinated open-price execution. A deterministic daily backtest connects these components for synthetic research, with performance evaluation based on the resulting sessions and committed fills.
 
 ## Daily market data
 
@@ -95,6 +95,18 @@ For every observed session, replay runs these phases in order.
 Pending orders stay accepted until the next matching eligible opening observation. Filled and rejected orders leave the pending set. The result reports outstanding orders at dataset end, along with sessions, signals, order history, transactions, fills, and rejection reasons. There is no forced liquidation.
 
 The runner uses the union of observed session dates. It assumes supplied opens are usable references and uses an idealized full-fill price, with no exchange calendar, liquidity or settlement model. Price gaps, fees, and whole-share constraints can leave actual holdings away from the desired allocation. Coordination is in-memory and sequential. An unexpected error aborts the run, and the failed coordinated fill leaves its ledger pair as it was before the attempt.
+
+## Performance evaluation
+
+Call `evaluate_performance(result, start_date=..., end_date=..., risk_free_rate_per_session=0)` from `trading_research.performance`. The evaluator reads the immutable backtest result. It uses initial cash as the starting equity and high-water mark, so the initial-to-first-snapshot return and drawdown are included. Returns are simple fractions between observed snapshots. Missing dates remain gaps, and external capital flows are outside this model.
+
+Calendar CAGR uses the supplied dates and a 365-day year. The start date must be on or before the first observed session, and the end date must match the final session. Provide both dates or omit both. CAGR requires at least 365 elapsed days and two observations. The result records the reason when dates are omitted or the sample is too short.
+
+Annualized volatility uses the sample standard deviation of returns and a multiplier of `sqrt(252)`. Sharpe uses the same scale with a constant per-observation risk-free return, zero by default. Both require two returns, and Sharpe is undefined at zero volatility. Undefined statistics are `None`. The 252-session scale is an assumption. A return spanning a gap can cover more than one trading session.
+
+Drawdown is the largest peak-to-trough decline, expressed as a nonnegative fraction. Long exposure is `(equity − cash) / equity` at each close and is averaged over observed snapshots. Turnover is total gross committed fill notional divided by mean observed closing equity, excluding initial capital from the denominator. Each committed fill counts as one executed order. Commissions and executed notional are in USD. Simulated price adjustments enter through fill prices and are not measured market costs.
+
+USD totals use the existing exact Decimal accounting policy. Ratios and statistical calculations use a separate local 34-digit Decimal context that permits rounding for division, roots, and powers. The evaluator rejects empty snapshots, nonpositive equity, inconsistent cash and holdings, or unordered session dates.
 
 ## Yahoo Finance daily history
 
