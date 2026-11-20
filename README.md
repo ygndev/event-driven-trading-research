@@ -118,6 +118,18 @@ In the synthetic round trip, the 64th close was $110 versus a $90 lookback close
 
 This is a price-only rule, so its signal omits dividend returns. Real ETF studies require a defensible policy for splits, dividends, and price provenance. A 100% target can also be rejected when the next-open fill cost plus commission exceeds available cash. Synthetic tests exercise the implementation and do not establish historical profitability.
 
+## SPY benchmark comparison
+
+Call `compare_spy_benchmarks(metadata, bars, initial_cash=..., adjustment_bps=..., commission=...)` from `trading_research.benchmark` with a single RAW-declared SPY dataset. Each run starts with the same capital and uses the same observed bars, fixed commission, adverse execution adjustment, and final session. The 64th observed close is the common decision anchor, even when momentum's scheduled target is zero. The runs process warm-up history and the comparison reports the aligned window from that close through the last observed close, including the zero initial-to-anchor return.
+
+Cash earns zero interest and generates no orders. Buy-and-hold submits a single 100% SPY target after the anchor close. The planner sizes whole shares at that close, and the order can fill at the next observed open. Any cash left over stays in the portfolio. A funding rejection is terminal, including when an opening gap or fee makes the full order unaffordable. Shares held at the final close are marked to market.
+
+Each labeled result includes the common-window equity path and the existing performance metrics. The return difference versus buy-and-hold is expressed in percentage points, and the final equity difference is in USD. Both describe this run's relative outcome. CAGR and Sharpe follow the evaluator's availability rules, including the reason recorded for unavailable CAGR.
+
+Using the synthetic momentum example above, buy-and-hold also bought nine shares at $108.27 and retained $24.32 cash. Marking those shares at the final $106 close produced $978.32 equity with $1.25 in commissions. Momentum ended at $965.7075 with $2.50 in commissions, trailing buy-and-hold by $12.6125 and 1.26125 percentage points. Cash stayed at $1,000.
+
+This comparison uses price-only SPY bars. Historical ETF total returns require dividend and split treatment and defensible price provenance. Yahoo's split-adjusted data remains outside the RAW execution contract. Synthetic results verify the implementation and offer no evidence of historical outperformance or statistical significance.
+
 ## Yahoo Finance daily history
 
 Use this command from the repository root once you have permission for automated acquisition and local storage. The requested range is inclusive, so the command sends an exclusive Yahoo end date of 2026-01-01.
