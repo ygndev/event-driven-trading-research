@@ -4,7 +4,7 @@ The research goal is to study how the timing of market events, order execution, 
 
 Planned work includes historical market data ingestion and replay, event-driven backtesting, simulated order fills and transaction costs, and reproducible experiment reporting.
 
-The current repository contains a daily market data contract, a Yahoo Finance ingestion workflow, deterministic daily replay, and a session-level signal interface. Strategies, backtesting, and execution simulation are pending.
+The current repository contains a daily market data contract, a Yahoo Finance ingestion workflow, deterministic daily replay, a session-level signal interface, and an in-memory order ledger. Strategies, backtesting, and execution simulation are pending.
 
 ## Daily market data
 
@@ -30,6 +30,16 @@ Pass the same datasets and a callable to `generate_signals(datasets, strategy)` 
 The strategy receives an immutable `SessionContext` with `session_date`, the current session's `events`, and `history(symbol)`. History includes observed events through that session, oldest first. A retained context keeps the same history as replay advances. Missing bars stay absent.
 
 Return an iterable of `SignalEvent(symbol, decision_session, target_exposure)`, or an empty iterable. The exposure is a long-only research target from 0 to 1. It expresses research intent. Execution requires a separate order decision. The decision date must match the context, and the symbol must have been observed by that session. At most one signal per symbol is accepted per session. Results are ordered by decision session and symbol. Repeated output depends on the strategy being deterministic.
+
+## Market order lifecycle
+
+Create a `MarketOrder` with a caller-supplied ID, symbol, BUY or SELL side, whole-share quantity, and decision session. The ID must be unique within an `OrderLedger`. Symbols are matched exactly and must be printable and free of whitespace. The optional `earliest_execution_session` is a caller-supplied lower bound. It must be strictly after the decision session.
+
+Registering an order records CREATED. A CREATED order can move to ACCEPTED or REJECTED. An ACCEPTED order can move to FILLED or REJECTED. FILLED and REJECTED are terminal. Rejections require a nonblank reason. `snapshot(order_id)` returns the current immutable record. `history()` returns an immutable sequence of successful operations in call order, including registration, intermediate states, fills, and rejection reasons.
+
+`record_fill(fill)` takes an externally supplied simulated execution result with the order ID, symbol, execution session, side, quantity, and price. It requires an accepted order, matching symbol and side, the full ordered quantity, and a finite positive price. The execution session must be strictly later than the decision session and on or after the supplied eligibility bound, if present.
+
+The ledger compares session dates without inferring an exchange calendar. It keeps history in memory and validates the order record and timing constraints. Assessing whether a fill was economically realistic or whether a SELL was covered by an existing long position requires additional execution and holdings data.
 
 ## Yahoo Finance daily history
 
