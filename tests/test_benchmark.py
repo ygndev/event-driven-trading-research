@@ -7,6 +7,7 @@ import pytest
 from trading_research import benchmark
 from trading_research.benchmark import (
     compare_spy_benchmarks,
+    compare_spy_common_window,
     compare_spy_mean_reversion_benchmarks,
 )
 from trading_research.daily_bars import (
@@ -589,3 +590,305 @@ def test_mean_reversion_comparison_is_repeatable_and_immutable():
     assert tuple(bars) == original
     with pytest.raises(FrozenInstanceError):
         setattr(result, "end_session", result.start_session)
+
+
+def common_window_bars(
+    *, entry_open=96, mean_reversion_exit_open=101, momentum_exit_open=110
+):
+    warmup = [90] * 63
+    warmup[5] = 80
+    warmup[21] = 120
+    warmup[57:62] = [100] * 5
+    warmup[62] = 96
+    closes = warmup + [97, 99, 101, 103, 105, 104, 106] + [104] * 14 + [102, 106]
+    return spy_bars(
+        closes, openings={
+            7: 79, 64: 95, 65: entry_open,
+            70: mean_reversion_exit_open, 86: momentum_exit_open,
+        }
+    )
+
+
+def compare_common_window(bars, *, bps=25, fee=Decimal("1.25")):
+    metadata = DatasetMetadata(
+        "Synthetic", "SPY", PriceAdjustment.RAW,
+        datetime(2028, 1, 1, tzinfo=UTC),
+    )
+    return compare_spy_common_window(
+        metadata, bars, initial_cash=1000, adjustment_bps=bps, commission=fee
+    )
+
+
+def test_common_window_four_portfolio_accounting_and_pairwise_differences():
+    bars = common_window_bars()
+    result = compare_common_window(bars)
+
+    assert result.start_session == ANCHOR == bars[63].session_date
+    assert result.end_session == SELL_FILL == bars[-1].session_date
+    assert (result.initial_cash, result.adjustment_bps, result.commission) == (
+        1000, 25, Decimal("1.25")
+    )
+    momentum, mean_reversion, holding, cash = (
+        result.momentum, result.mean_reversion, result.buy_and_hold, result.cash
+    )
+    runs = (momentum, mean_reversion, holding, cash)
+    dates = tuple(bar.session_date for bar in bars[63:])
+    for run in runs:
+        assert tuple(day for day, _ in run.equity_path) == dates
+        assert run.equity_path[0] == (ANCHOR, Decimal(1000))
+        baseline = run.backtest.sessions[0].portfolio
+        assert baseline.initial_cash == baseline.cash == 1000
+        assert baseline.positions == {}
+        assert baseline.cumulative_commissions == 0
+        assert tuple(row.session_date for row in run.metrics.session_returns) == dates
+        assert run.metrics.session_returns[0].simple_return == 0
+        assert run.metrics.annualized_return is None
+        assert "at least 365 days" in run.metrics.annualized_return_reason
+        assert all(
+            entry.order.decision_session >= ANCHOR
+            for entry in run.backtest.order_history
+        )
+        assert run.backtest.outstanding_orders == ()
+        assert run.backtest.rejected_orders == ()
+
+    assert momentum.backtest.signals == (
+        SignalEvent("SPY", ANCHOR, 1), SignalEvent("SPY", REVERSAL, 0)
+    )
+    assert mean_reversion.backtest.signals == (
+        SignalEvent("SPY", ANCHOR, 1),
+        SignalEvent("SPY", date(2025, 3, 10), 0),
+    )
+    assert holding.backtest.signals == (SignalEvent("SPY", ANCHOR, 1),)
+    assert cash.backtest.signals == cash.backtest.order_history == ()
+    assert cash.equity_path == tuple((day, Decimal(1000)) for day in dates)
+    assert cash.metrics.sharpe_ratio is None
+    assert result.outstanding_exit is None
+
+    purchase, momentum_sale = momentum.backtest.transactions
+    assert mean_reversion.backtest.transactions[0] == purchase
+    assert holding.backtest.transactions == (purchase,)
+    assert cash.backtest.transactions == ()
+    mean_reversion_sale = mean_reversion.backtest.transactions[1]
+    for trade, day, side, price, balance in (
+        (purchase, FIRST_FILL, OrderSide.BUY, "96.24", "36.35"),
+        (momentum_sale, SELL_FILL, OrderSide.SELL, "109.725", "1132.35"),
+        (mean_reversion_sale, date(2025, 3, 11), OrderSide.SELL,
+         "100.7475", "1042.575"),
+    ):
+        fill = trade.fill
+        assert (fill.execution_session, fill.side, fill.quantity, fill.price) == (
+            day, side, 10, Decimal(price)
+        )
+        assert trade.commission == Decimal("1.25")
+        assert trade.cash_after == Decimal(balance)
+    assert all(
+        valuation.portfolio.positions == {"SPY": 10}
+        for valuation in mean_reversion.backtest.sessions[1:6]
+    )
+    assert mean_reversion.backtest.sessions[6].portfolio.positions == {}
+
+    final = [run.backtest.sessions[-1] for run in runs]
+    assert [session.portfolio.positions for session in final] == [
+        {}, {}, {"SPY": 10}, {}
+    ]
+    assert [session.portfolio.cash for session in final] == list(map(
+        Decimal, ("1132.35", "1042.575", "36.35", "1000")
+    ))
+    assert [session.equity for session in final] == list(map(
+        Decimal, ("1132.35", "1042.575", "1096.35", "1000")
+    ))
+    assert [run.metrics.total_return for run in runs] == list(map(
+        Decimal, ("0.13235", "0.042575", "0.09635", "0")
+    ))
+    assert [run.metrics.total_commissions for run in runs] == list(map(
+        Decimal, ("2.50", "2.50", "1.25", "0")
+    ))
+    assert [run.metrics.executed_orders for run in runs] == [2, 2, 1, 0]
+    assert {
+        (gap.left, gap.right): (gap.return_difference_pp, gap.equity_difference_usd)
+        for gap in result.pairwise_differences
+    } == {
+        (momentum.label, mean_reversion.label): (Decimal("8.9775"), Decimal("89.775")),
+        (momentum.label, holding.label): (Decimal("3.6"), Decimal("36")),
+        (momentum.label, cash.label): (Decimal("13.235"), Decimal("132.35")),
+        (mean_reversion.label, holding.label): (Decimal("-5.3775"), Decimal("-53.775")),
+        (mean_reversion.label, cash.label): (Decimal("4.2575"), Decimal("42.575")),
+        (holding.label, cash.label): (Decimal("9.635"), Decimal("96.35")),
+    }
+
+
+def test_common_window_keeps_mean_reversion_inactive_during_warmup(monkeypatch):
+    bars = common_window_bars()
+    standalone = compare_mean_reversion(bars[:63]).mean_reversion.backtest
+
+    assert standalone.signals[0] == SignalEvent("SPY", bars[5].session_date, 1)
+    assert standalone.fills
+    pending, = standalone.outstanding_orders
+    assert pending.order.decision_session == bars[62].session_date
+    assert pending.order.side is OrderSide.BUY
+
+    strategy = benchmark.short_term_mean_reversion
+    contexts = []
+
+    def capture(context):
+        contexts.append(context)
+        return strategy(context)
+
+    monkeypatch.setattr(benchmark, "short_term_mean_reversion", capture)
+    active = compare_common_window(bars).mean_reversion.backtest
+
+    first = contexts[0]
+    assert first.session_date == ANCHOR
+    assert tuple(event.bar for event in first.history("SPY")) == tuple(bars[:64])
+    assert first.execution.portfolio.positions == {}
+    assert first.execution.pending_orders == first.execution.outcomes == ()
+    assert first.last_order_outcome("SPY") is None
+    assert active.signals[0] == SignalEvent("SPY", ANCHOR, 1)
+    assert active.orders[0].decision_session == ANCHOR
+    assert active.fills[0].execution_session == FIRST_FILL
+    assert active.sessions[0].portfolio.positions == {}
+    assert active.rejected_orders == ()
+
+
+@pytest.mark.parametrize(("reversion_open", "expected_winner", "expected_equity"), [
+    (109, "SPY mean reversion", Decimal("1122.375")),
+    (101, "SPY buy-and-hold", Decimal("1096.35")),
+])
+def test_synthetic_paths_can_favor_either_reversion_or_holding(
+    reversion_open, expected_winner, expected_equity
+):
+    result = compare_common_window(common_window_bars(
+        mean_reversion_exit_open=reversion_open, momentum_exit_open=100
+    ))
+
+    winner = max(
+        (result.momentum, result.mean_reversion, result.buy_and_hold, result.cash),
+        key=lambda run: run.equity_path[-1][1],
+    )
+    assert winner.label == expected_winner
+    assert winner.equity_path[-1][1] == expected_equity
+
+
+def test_common_window_flat_prices_keep_both_active_portfolios_in_cash():
+    bars = spy_bars([100] * 107)
+    result = compare_common_window(bars, bps=0, fee=0)
+
+    assert result.momentum.backtest.signals == tuple(
+        SignalEvent("SPY", bars[index - 1].session_date, 0)
+        for index in (64, 85, 106)
+    )
+    assert result.mean_reversion.backtest.signals == ()
+    for run in (result.momentum, result.mean_reversion, result.cash):
+        assert run.backtest.orders == run.backtest.fills == ()
+    assert all(gap.return_difference_pp == gap.equity_difference_usd == 0
+               for gap in result.pairwise_differences)
+    buy, = result.buy_and_hold.backtest.fills
+    assert buy.quantity == 10
+    assert buy.execution_session == FIRST_FILL
+    assert result.buy_and_hold.backtest.sessions[-1].portfolio.positions == {"SPY": 10}
+    assert result.buy_and_hold.metrics.sharpe_ratio is None
+
+
+def test_future_gap_and_price_changes_cannot_change_anchor_orders():
+    bars = common_window_bars()
+    anchor_only = compare_common_window(bars[:64])
+    opening = replace(
+        bars[64], session_date=FIRST_FILL + timedelta(days=3),
+        open=94, low=94, high=110, close=110,
+    )
+    gapped = compare_common_window([*bars[:64], opening])
+    original = compare_common_window(bars[:65])
+
+    for single, gap, base in (
+        (anchor_only.momentum, gapped.momentum, original.momentum),
+        (anchor_only.mean_reversion, gapped.mean_reversion, original.mean_reversion),
+        (anchor_only.buy_and_hold, gapped.buy_and_hold, original.buy_and_hold),
+    ):
+        accepted, = single.backtest.outstanding_orders
+        assert accepted.state is OrderState.ACCEPTED
+        assert single.backtest.fills == ()
+        assert single.metrics.annualized_volatility is None
+        assert single.backtest.signals == gap.backtest.signals == base.backtest.signals
+        assert (accepted.order,) == gap.backtest.orders == base.backtest.orders
+        assert accepted.order.quantity == 10
+        fill, = gap.backtest.fills
+        assert fill.execution_session == opening.session_date
+        assert fill.price == Decimal("94.235")
+        assert base.backtest.fills[0].price == Decimal("96.24")
+        assert tuple(day for day, _ in gap.equity_path) == (
+            ANCHOR, opening.session_date
+        )
+
+
+def test_common_window_keeps_a_final_accepted_exit_open():
+    bars = common_window_bars()[:69]
+    result = compare_common_window(bars)
+
+    run = result.mean_reversion
+    order, = run.backtest.outstanding_orders
+    assert result.outstanding_exit is order
+    assert order.state is OrderState.ACCEPTED
+    assert order.order.side is OrderSide.SELL
+    assert order.order.decision_session == result.end_session
+    assert order.fill is None
+    assert run.backtest.sessions[-1].portfolio.positions == {"SPY": 10}
+    assert run.equity_path[-1][1] == Decimal("1076.35")
+    assert run.metrics.executed_orders == 1
+    assert run.metrics.total_commissions == Decimal("1.25")
+
+
+def test_common_window_propagates_a_rejected_exit():
+    bars = common_window_bars(entry_open=90, mean_reversion_exit_open=1)
+
+    with pytest.raises(MeanReversionExitRejected) as failure:
+        compare_common_window(bars, bps=0, fee=50)
+
+    rejection = failure.value.rejection
+    assert rejection.order.side is OrderSide.SELL
+    assert rejection.order.decision_session == bars[68].session_date
+    assert rejection.state is OrderState.REJECTED
+    assert rejection.fill is None
+    assert "commission exceeds proceeds" in rejection.rejection_reason
+
+
+def test_common_window_preserves_the_rejected_entry_policy():
+    bars = common_window_bars(entry_open=105)[:66]
+    bars[64] = replace(bars[64], close=95, low=95)
+    bars[65] = replace(bars[65], close=94, low=94)
+
+    result = compare_common_window(bars)
+    run = result.mean_reversion
+
+    rejected, = run.backtest.rejected_orders
+    assert rejected.order.side is OrderSide.BUY
+    assert "insufficient cash" in rejected.rejection_reason
+    assert run.backtest.signals == (SignalEvent("SPY", ANCHOR, 1),)
+    assert run.backtest.fills == run.backtest.outstanding_orders == ()
+    assert run.equity_path == result.cash.equity_path
+    assert run.metrics.total_commissions == 0
+
+
+def test_common_window_is_reproducible_and_preserves_individual_benchmarks():
+    bars = common_window_bars()
+    original = tuple(bars)
+    momentum = compare(bars)
+    mean_reversion = compare_mean_reversion(bars)
+
+    result = compare_common_window(bars)
+
+    assert result == compare_common_window(bars)
+    assert tuple(bars) == original
+    assert result.momentum == momentum.momentum
+    assert result.buy_and_hold == momentum.buy_and_hold
+    assert result.cash == momentum.cash
+    assert mean_reversion == compare_mean_reversion(bars)
+    assert mean_reversion.start_session == bars[5].session_date
+    first_fill = mean_reversion.mean_reversion.backtest.fills[0]
+    assert first_fill.execution_session == bars[6].session_date
+    with pytest.raises(FrozenInstanceError):
+        setattr(result, "start_session", result.end_session)
+
+
+def test_common_window_requires_64_observations():
+    with pytest.raises(ValueError, match="requires 64 SPY closes"):
+        compare_common_window(common_window_bars()[:63])

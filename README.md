@@ -156,6 +156,16 @@ The comparison preserves each run's `backtest.outstanding_orders` and final hold
 
 Momentum's separate comparison starts at observation 64. A future strategy-to-strategy study needs an identical out-of-sample period. Synthetic cases check timing, costs, and accounting and establish no historical edge or statistical significance. ETF total-return research still needs defensible corporate-action, dividend, and price-provenance policies.
 
+## SPY common-window strategy comparison
+
+Call `compare_spy_common_window(metadata, bars, initial_cash=..., adjustment_bps=..., commission=...)` from `trading_research.benchmark` with one RAW-declared SPY dataset. Use the same synthetic observations for momentum, mean reversion, buy-and-hold, and zero-interest cash. Scoring starts with identical uninvested capital at the 64th observed close and ends at the last observed close. The first 63 observations supply completed-bar history and generate no orders or scored returns. Missing observations remain gaps.
+
+Momentum uses its existing decisions at observations 64, 85, 106, and every 21 thereafter. The comparison starts calling mean reversion at observation 64, when the strategy can evaluate the return from close 59 to close 64. Its portfolio and order ledger have had no trading activity. The first committed BUY starts the existing five-held-close count. Buy-and-hold submits one full target at the anchor, and cash earns no interest and submits no orders.
+
+All trading decisions size whole shares at the decision close. Fills use the next eligible observed open with the same adverse price adjustment and fixed commission per fill. The final close marks open positions, and each run's `backtest.sessions[-1].portfolio` reports final holdings and cash. Accepted orders still waiting for an open remain in `backtest.outstanding_orders`. The comparison's `outstanding_exit` identifies an incomplete mean-reversion round trip with an accepted SELL. A rejected entry follows the strategy's fresh-crossing rule. A rejected mean-reversion exit raises `MeanReversionExitRejected` and aborts the comparison.
+
+The four runs share the performance evaluator and retain its undefined statistics. Each row of `pairwise_differences` subtracts the right portfolio from the left in total-return percentage points and final-equity USD. These differences describe one aligned window. Synthetic runs verify timing, accounting, and scoring and establish no statistical significance or historical profitability. The RAW declaration in a synthetic fixture describes the simulation contract. Historical ETF studies still need verified price provenance, defensible split and dividend treatment, and a common out-of-sample protocol.
+
 ## Yahoo Finance daily history
 
 Use this command from the repository root once you have permission for automated acquisition and local storage. The requested range is inclusive, so the command sends an exclusive Yahoo end date of 2026-01-01.

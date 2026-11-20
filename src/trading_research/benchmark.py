@@ -4,6 +4,7 @@ from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, replace
 from datetime import date
 from decimal import Decimal, localcontext
+from itertools import combinations
 
 from ._money import USD_CONTEXT, Money, decimal_amount
 from .backtest import BacktestResult, run_backtest
@@ -71,11 +72,71 @@ class MeanReversionBenchmarkComparison:
     @property
     def outstanding_exit(self) -> OrderSnapshot | None:
         """The accepted SELL, if the round trip is incomplete at the end."""
-        orders = self.mean_reversion.backtest.outstanding_orders
-        return next(
-            (entry for entry in orders if entry.order.side is OrderSide.SELL),
-            None,
+        return _outstanding_exit(self.mean_reversion)
+
+
+@dataclass(frozen=True, slots=True)
+class BenchmarkDifference:
+    left: str
+    right: str
+    return_difference_pp: Decimal
+    equity_difference_usd: Decimal
+
+
+@dataclass(frozen=True, slots=True)
+class CommonWindowBenchmarkComparison:
+    start_session: date
+    end_session: date
+    initial_cash: Decimal
+    adjustment_bps: Decimal
+    commission: Decimal
+    momentum: BenchmarkRun
+    mean_reversion: BenchmarkRun
+    buy_and_hold: BenchmarkRun
+    cash: BenchmarkRun
+
+    @property
+    def pairwise_differences(self) -> tuple[BenchmarkDifference, ...]:
+        """Return left-minus-right differences for each of the six pairs."""
+        runs = (self.momentum, self.mean_reversion, self.buy_and_hold, self.cash)
+        return tuple(
+            BenchmarkDifference(
+                left.label,
+                right.label,
+                *_equity_difference(
+                    left.backtest.sessions[-1].equity,
+                    right.backtest.sessions[-1].equity,
+                    self.initial_cash,
+                ),
+            )
+            for left, right in combinations(runs, 2)
         )
+
+    @property
+    def outstanding_exit(self) -> OrderSnapshot | None:
+        """The accepted mean-reversion SELL, if the round trip is incomplete."""
+        return _outstanding_exit(self.mean_reversion)
+
+
+def _outstanding_exit(run: BenchmarkRun) -> OrderSnapshot | None:
+    return next(
+        (
+            entry for entry in run.backtest.outstanding_orders
+            if entry.order.side is OrderSide.SELL
+        ),
+        None,
+    )
+
+
+def _equity_difference(
+    left: Decimal, right: Decimal, initial_cash: Decimal,
+) -> tuple[Decimal, Decimal]:
+    # Equal initial capital turns the final equity difference into a return gap.
+    with localcontext(USD_CONTEXT):
+        difference_usd = left - right
+    with localcontext(_STATISTICS_CONTEXT):
+        difference_pp = difference_usd / initial_cash * 100
+    return difference_pp, difference_usd
 
 
 def _comparison_window(
@@ -155,14 +216,15 @@ def _comparison_inputs(
 def _compare_spy_runs(
     metadata: DatasetMetadata,
     bars: tuple[DailyBar, ...],
-    strategy: Callable[[SessionContext], Iterable[SignalEvent]],
+    strategies: tuple[
+        tuple[str, Callable[[SessionContext], Iterable[SignalEvent]]], ...
+    ],
     *,
-    label: str,
     anchor_index: int,
     initial_cash: Decimal,
     adjustment_bps: Decimal,
     commission: Decimal,
-) -> tuple[BenchmarkRun, BenchmarkRun, BenchmarkRun]:
+) -> tuple[tuple[BenchmarkRun, ...], BenchmarkRun, BenchmarkRun]:
     datasets = ((metadata, bars),)
 
     def run(
@@ -173,11 +235,14 @@ def _compare_spy_runs(
             adjustment_bps=adjustment_bps, commission=commission,
         )
 
-    strategy_result = run(strategy)
+    strategy_results = tuple(
+        (label, run(strategy)) for label, strategy in strategies
+    )
     dates = tuple(bar.session_date for bar in bars)
     start, end = dates[anchor_index], dates[-1]
-    primary = _comparison_window(
-        strategy_result, dates, anchor_index, initial_cash
+    strategy_windows = tuple(
+        (label, _comparison_window(result, dates, anchor_index, initial_cash))
+        for label, result in strategy_results
     )
 
     def buy_and_hold(context: SessionContext) -> tuple[SignalEvent, ...]:
@@ -192,16 +257,15 @@ def _compare_spy_runs(
 
     def measure(label: str, result: BacktestResult) -> BenchmarkRun:
         metrics = evaluate_performance(result, start_date=start, end_date=end)
-        with localcontext(USD_CONTEXT):
-            difference_usd = result.sessions[-1].equity - baseline_equity
-        with localcontext(_STATISTICS_CONTEXT):
-            difference_pp = difference_usd / initial_cash * 100
+        difference_pp, difference_usd = _equity_difference(
+            result.sessions[-1].equity, baseline_equity, initial_cash
+        )
         return BenchmarkRun(
             label, result, metrics, difference_pp, difference_usd
         )
 
     return (
-        measure(label, primary),
+        tuple(measure(label, result) for label, result in strategy_windows),
         measure("SPY buy-and-hold", holding),
         measure(
             "Cash (zero interest)",
@@ -225,8 +289,8 @@ def compare_spy_benchmarks(
         metadata, bars, _MOMENTUM_LOOKBACK, initial_cash,
         adjustment_bps, commission,
     )
-    momentum, holding, cash = _compare_spy_runs(
-        metadata, observations, time_series_momentum, label="SPY momentum",
+    (momentum,), holding, cash = _compare_spy_runs(
+        metadata, observations, (("SPY momentum", time_series_momentum),),
         anchor_index=_MOMENTUM_LOOKBACK, initial_cash=capital,
         adjustment_bps=bps, commission=fee,
     )
@@ -255,9 +319,10 @@ def compare_spy_mean_reversion_benchmarks(
         metadata, bars, _MEAN_REVERSION_LOOKBACK, initial_cash,
         adjustment_bps, commission,
     )
-    mean_reversion, holding, cash = _compare_spy_runs(
-        metadata, observations, short_term_mean_reversion,
-        label="SPY mean reversion", anchor_index=_MEAN_REVERSION_LOOKBACK,
+    (mean_reversion,), holding, cash = _compare_spy_runs(
+        metadata, observations,
+        (("SPY mean reversion", short_term_mean_reversion),),
+        anchor_index=_MEAN_REVERSION_LOOKBACK,
         initial_cash=capital, adjustment_bps=bps, commission=fee,
     )
     return MeanReversionBenchmarkComparison(
@@ -266,6 +331,50 @@ def compare_spy_mean_reversion_benchmarks(
         initial_cash=capital,
         adjustment_bps=bps,
         commission=fee,
+        mean_reversion=mean_reversion,
+        buy_and_hold=holding,
+        cash=cash,
+    )
+
+
+def compare_spy_common_window(
+    metadata: DatasetMetadata,
+    bars: Sequence[DailyBar],
+    *,
+    initial_cash: Money,
+    adjustment_bps: Money,
+    commission: Money,
+) -> CommonWindowBenchmarkComparison:
+    """Compare both fixed SPY strategies from the 64th observed close."""
+    observations, capital, bps, fee = _comparison_inputs(
+        metadata, bars, _MOMENTUM_LOOKBACK, initial_cash,
+        adjustment_bps, commission,
+    )
+    anchor_bar = observations[_MOMENTUM_LOOKBACK]
+
+    def activated_mean_reversion(
+        context: SessionContext,
+    ) -> tuple[SignalEvent, ...]:
+        if context.session_date < anchor_bar.session_date:
+            return ()
+        return short_term_mean_reversion(context)
+
+    (momentum, mean_reversion), holding, cash = _compare_spy_runs(
+        metadata, observations,
+        (
+            ("SPY momentum", time_series_momentum),
+            ("SPY mean reversion", activated_mean_reversion),
+        ),
+        anchor_index=_MOMENTUM_LOOKBACK, initial_cash=capital,
+        adjustment_bps=bps, commission=fee,
+    )
+    return CommonWindowBenchmarkComparison(
+        start_session=anchor_bar.session_date,
+        end_session=observations[-1].session_date,
+        initial_cash=capital,
+        adjustment_bps=bps,
+        commission=fee,
+        momentum=momentum,
         mean_reversion=mean_reversion,
         buy_and_hold=holding,
         cash=cash,
