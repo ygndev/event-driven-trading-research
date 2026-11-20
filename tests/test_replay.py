@@ -159,3 +159,21 @@ def test_consumer_cannot_change_the_validated_sequence_by_mutating_input():
 
     assert received == original
     assert bars[1].volume == -1
+
+
+def test_session_end_callback_follows_all_market_events_for_the_session():
+    trace = []
+    replay_daily_bars(
+        [dataset("SPY", FIRST, LATER), dataset("QQQ", FIRST, NEXT)],
+        lambda event: trace.append((event.bar.session_date, event.bar.symbol)),
+        on_session_end=lambda session: trace.append((session, "end")),
+    )
+    assert trace == [
+        (FIRST, "QQQ"),
+        (FIRST, "SPY"),
+        (FIRST, "end"),
+        (NEXT, "QQQ"),
+        (NEXT, "end"),
+        (LATER, "SPY"),
+        (LATER, "end"),
+    ]

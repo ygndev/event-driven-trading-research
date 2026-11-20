@@ -2,7 +2,9 @@
 
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
+from datetime import date
 from heapq import merge
+from itertools import groupby
 
 from .daily_bars import (
     DailyBar,
@@ -23,11 +25,14 @@ class MarketEvent:
 def replay_daily_bars(
     datasets: Iterable[tuple[DatasetMetadata, Sequence[DailyBar]]],
     on_event: Callable[[MarketEvent], None],
+    *,
+    on_session_end: Callable[[date], None] | None = None,
 ) -> None:
     """Validate all datasets, then deliver events by session date and symbol.
 
     Each callback runs at the conceptual end of the bar's session. It receives
     only that event, and replay advances after the callback returns.
+    The optional session callback follows all market events for that date.
     """
     streams: list[tuple[DailyBar, ...]] = []
     adjustments: dict[str, PriceAdjustment] = {}
@@ -46,5 +51,9 @@ def replay_daily_bars(
     if not streams:
         raise ValueError("replay requires at least one dataset")
 
-    for bar in merge(*streams, key=lambda bar: (bar.session_date, bar.symbol)):
-        on_event(MarketEvent(bar, adjustments[bar.symbol]))
+    ordered = merge(*streams, key=lambda bar: (bar.session_date, bar.symbol))
+    for session, bars in groupby(ordered, key=lambda bar: bar.session_date):
+        for bar in bars:
+            on_event(MarketEvent(bar, adjustments[bar.symbol]))
+        if on_session_end is not None:
+            on_session_end(session)

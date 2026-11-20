@@ -4,7 +4,7 @@ The research goal is to study how the timing of market events, order execution, 
 
 Planned work includes historical market data ingestion and replay, event-driven backtesting, simulated order fills and transaction costs, and reproducible experiment reporting.
 
-The current repository contains a daily market data contract, a Yahoo Finance ingestion workflow, and deterministic daily replay. Strategies, backtesting, and execution simulation are pending.
+The current repository contains a daily market data contract, a Yahoo Finance ingestion workflow, deterministic daily replay, and a session-level signal interface. Strategies, backtesting, and execution simulation are pending.
 
 ## Daily market data
 
@@ -22,6 +22,14 @@ Call `replay_daily_bars(datasets, on_event)` from `trading_research.replay`. Pas
 Replay advances by exchange session date. After the conceptual end of each session, it delivers each available bar in lexicographic symbol order. The tie-break is a replay convention and conveys no intraday ordering. Each callback receives only an immutable `MarketEvent` with the bar and its declared price adjustment. Replay advances after the callback returns and provides no history or lookahead interface.
 
 The session boundary models when a completed daily bar can first be used in this replay. It supplies no exact close or delivery time and makes no point-in-time availability claim about a provider. Retrieval timestamps remain dataset provenance.
+
+## Session signals
+
+Pass the same datasets and a callable to `generate_signals(datasets, strategy)` from `trading_research.signals`. The strategy is called once per observed session, after all of that session's replay events have been delivered. The optional `on_session_end` callback on `replay_daily_bars` marks this boundary for callers that handle market events directly.
+
+The strategy receives an immutable `SessionContext` with `session_date`, the current session's `events`, and `history(symbol)`. History includes observed events through that session, oldest first. A retained context keeps the same history as replay advances. Missing bars stay absent.
+
+Return an iterable of `SignalEvent(symbol, decision_session, target_exposure)`, or an empty iterable. The exposure is a long-only research target from 0 to 1. It expresses research intent. Execution requires a separate order decision. The decision date must match the context, and the symbol must have been observed by that session. At most one signal per symbol is accepted per session. Results are ordered by decision session and symbol. Repeated output depends on the strategy being deterministic.
 
 ## Yahoo Finance daily history
 
