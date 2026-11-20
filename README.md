@@ -4,7 +4,7 @@ The research goal is to study how the timing of market events, order execution, 
 
 Planned work includes historical market data ingestion and replay, event-driven backtesting, simulated order fills and transaction costs, and reproducible experiment reporting.
 
-The current repository contains a daily market data contract, a Yahoo Finance ingestion workflow, deterministic daily replay, a session-level signal interface, an order ledger, portfolio accounting, and standalone open-price execution proposals. Strategies and backtest integration are pending.
+The current repository contains a daily market data contract, a Yahoo Finance ingestion workflow, deterministic daily replay, a session-level signal interface, an order ledger, portfolio accounting, and coordinated open-price execution. Strategies and backtest integration are pending.
 
 ## Daily market data
 
@@ -49,7 +49,7 @@ Balances, fees, and values use `Decimal`. Integers and decimals retain their val
 
 `snapshot()` returns detached, read-only cash, holdings, and cumulative fees. `history()` returns immutable transaction records in application order, each with its original fill, commission, and resulting cash. `mark_to_market(snapshot, prices)` adds cash and the marked value of all open positions. It requires positive finite caller-supplied prices for every holding and never fetches or carries forward quotes. An empty portfolio values to cash.
 
-For lifecycle-checked fills, pass the `Fill` recorded by `OrderLedger` to the portfolio. The two updates are independent and non-atomic. An order ledger can record a fill that portfolio accounting subsequently rejects. Fill validation establishes lifecycle and accounting consistency within each ledger. Economic realism and the quality of valuation marks depend on the caller's inputs. This in-memory ledger covers single-currency cash and shares. Settlement, cost basis, P&L reporting, and corporate actions are outside its scope.
+Direct calls to the standalone ledgers are independent and non-atomic. An order ledger can record a fill that portfolio accounting subsequently rejects. Use the coordinator for consistent updates across both ledgers. Fill validation establishes lifecycle and accounting consistency within each ledger. Economic realism and the quality of valuation marks depend on the caller's inputs. This in-memory ledger covers single-currency cash and shares. Settlement, cost basis, P&L reporting, and corporate actions are outside its scope.
 
 ## Next-session open execution
 
@@ -59,7 +59,17 @@ Only data declared RAW is eligible. The model rejects both split-adjusted and to
 
 The modeled price is `open × (1 + bps / 10000)` for BUY and `open × (1 − bps / 10000)` for SELL. Basis points must be finite and nonnegative, and the result must be positive. The adjustment is a hypothetical execution disadvantage. A separate fixed USD commission is reported once per proposed full fill. Prices, basis points, and fees use the accounting decimal policy, with exact arithmetic checked at 34 significant digits and no tick-size rounding.
 
-A `ProposedExecution` contains the `Fill`, commission, reference open, and basis points. The caller retains responsibility for subsequent order and portfolio validation and commitment. This model uses daily observations and cannot assess liquidity, queue position, spread, market impact, or exchange matching.
+A `ProposedExecution` contains the `Fill`, commission, reference open, and basis points. Use the coordinator below to validate and commit a proposal to both ledgers. This model uses daily observations and cannot assess liquidity, queue position, spread, market impact, or exchange matching.
+
+## Coordinated execution
+
+Initialize an `ExecutionCoordinator(orders, portfolio)` from `trading_research.coordinator` with the standalone ledgers. Register and accept the intended orders before taking this initial copy. Existing fills must agree across both histories in transaction order. The coordinator owns its ledger copies and exposes their state through `order_snapshot`, `order_history`, `portfolio_snapshot`, and `portfolio_history`.
+
+Use the current order snapshot to price a proposal with `NextOpenExecution`, then pass it to `execute(order_id, proposal)`. The coordinator checks that the proposed price follows the model formula and delegates lifecycle, identity, timing, and funds checks to the existing ledgers. It stages both updates on detached copies and publishes the pair together. One portfolio transaction carries the fill and the supplied commission. The proposal's commission is informational.
+
+Insufficient cash or holdings and commissions exceeding sale proceeds produce a terminal REJECTED order with a reason. The portfolio is unchanged. Invalid proposals or unexpected exceptions preserve both ledgers and propagate to the caller. An unexpected staging failure can be retried using the same proposal.
+
+Calls are processed sequentially in the order supplied. Earlier bookings change cash and holdings available to later orders. Atomicity applies to this in-memory coordinator under sequential access. Its state is lost on process exit, and callers must serialize access. The coordinator uses the proposal's supplied opening price and execution session, and relies on the execution model for observed-bar selection. Strategy sizing, settlement, liquidity, and live brokerage remain outside this workflow.
 
 ## Yahoo Finance daily history
 

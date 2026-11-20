@@ -24,6 +24,34 @@ class ProposedExecution:
     adjustment_bps: Decimal
 
 
+def _adjusted_price(
+    opening_price: Decimal, adjustment_bps: Decimal, side: OrderSide
+) -> Decimal:
+    with localcontext(USD_CONTEXT):
+        adjustment = adjustment_bps / 10_000
+        multiplier = (
+            1 + adjustment if side is OrderSide.BUY else 1 - adjustment
+        )
+        return opening_price * multiplier
+
+
+def _validate_proposal_price(proposal: ProposedExecution) -> None:
+    if not isinstance(proposal, ProposedExecution):
+        raise ValueError("execution requires a ProposedExecution")
+    if not isinstance(proposal.fill, Fill):
+        raise ValueError("proposal must contain a Fill")
+
+    opening = decimal_amount(proposal.opening_price, "opening_price")
+    bps = decimal_amount(
+        proposal.adjustment_bps, "adjustment_bps", allow_zero=True
+    )
+    expected = _adjusted_price(opening, bps, proposal.fill.side)
+    if to_decimal(proposal.fill.price) != expected:
+        raise ValueError(
+            "fill price does not match the proposed opening adjustment"
+        )
+
+
 class NextOpenExecution:
     """Price each order at most once per sequential simulation run."""
 
@@ -85,14 +113,9 @@ class NextOpenExecution:
                 continue
 
             opening_price = to_decimal(bar.open)
-            with localcontext(USD_CONTEXT):
-                adjustment = self._adjustment_bps / 10_000
-                multiplier = (
-                    1 + adjustment
-                    if order.side is OrderSide.BUY
-                    else 1 - adjustment
-                )
-                price = opening_price * multiplier
+            price = _adjusted_price(
+                opening_price, self._adjustment_bps, order.side
+            )
 
             fill = Fill(
                 order_id=order.order_id,

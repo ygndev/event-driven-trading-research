@@ -32,6 +32,10 @@ class PortfolioSnapshot:
         object.__setattr__(self, "positions", positions)
 
 
+class PortfolioRejection(ValueError):
+    """A valid fill exceeds available cash, holdings, or sale proceeds."""
+
+
 class PortfolioLedger:
     """Book supplied fills against USD cash and long-only holdings."""
 
@@ -42,6 +46,14 @@ class PortfolioLedger:
         self._commissions = Decimal(0)
         # Order IDs are unique because the order ledger permits one full fill.
         self._transactions: dict[str, PortfolioTransaction] = {}
+
+    def _copy(self) -> "PortfolioLedger":
+        ledger = PortfolioLedger(self._initial_cash)
+        ledger._cash = self._cash
+        ledger._positions = self._positions.copy()
+        ledger._commissions = self._commissions
+        ledger._transactions = self._transactions.copy()
+        return ledger
 
     def apply_fill(self, fill: Fill, commission: Money = 0) -> None:
         """Book a fill and its supplied commission in this ledger."""
@@ -63,16 +75,18 @@ class PortfolioLedger:
             if fill.side is OrderSide.BUY:
                 debit = notional + fee
                 if debit > self._cash:
-                    raise ValueError(f"order {order_id!r}: insufficient cash")
+                    raise PortfolioRejection(
+                        f"order {order_id!r}: insufficient cash"
+                    )
                 cash = self._cash - debit
                 quantity = held + fill.quantity
             else:
                 if fill.quantity > held:
-                    raise ValueError(
+                    raise PortfolioRejection(
                         f"order {order_id!r}: insufficient holdings"
                     )
                 if fee > notional:
-                    raise ValueError(
+                    raise PortfolioRejection(
                         f"order {order_id!r}: commission exceeds proceeds"
                     )
                 cash = self._cash + (notional - fee)

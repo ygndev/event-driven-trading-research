@@ -134,6 +134,12 @@ class OrderLedger:
         self._orders: dict[str, OrderSnapshot] = {}
         self._history: list[OrderSnapshot] = []
 
+    def _copy(self) -> "OrderLedger":
+        ledger = OrderLedger()
+        ledger._orders = self._orders.copy()
+        ledger._history = self._history.copy()
+        return ledger
+
     def register(self, order: MarketOrder) -> None:
         if not isinstance(order, MarketOrder):
             raise ValueError("expected a MarketOrder")
