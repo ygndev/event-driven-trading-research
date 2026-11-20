@@ -166,6 +166,29 @@ All trading decisions size whole shares at the decision close. Fills use the nex
 
 The four runs share the performance evaluator and retain its undefined statistics. Each row of `pairwise_differences` subtracts the right portfolio from the left in total-return percentage points and final-equity USD. These differences describe one aligned window. Synthetic runs verify timing, accounting, and scoring and establish no statistical significance or historical profitability. The RAW declaration in a synthetic fixture describes the simulation contract. Historical ETF studies still need verified price provenance, defensible split and dividend treatment, and a common out-of-sample protocol.
 
+## SPY transaction-cost sensitivity
+
+Call `run_transaction_cost_sensitivity(metadata, bars, initial_cash=...)` from `trading_research.sensitivity` with one RAW-declared synthetic SPY dataset. The analysis independently reruns momentum, mean reversion, buy-and-hold, and zero-interest cash for each scenario. All runs use the same observations, starting capital, and fixed strategy rules. The comparison scores from the 64th observed close through the last observed close.
+
+| Scenario | Adverse adjustment | USD commission per fill |
+|---|---:|---:|
+| A | 0 bps | $0.00 |
+| B | 0 bps | $1.25 |
+| C | 10 bps | $1.25 |
+| D (synthetic reference) | 25 bps | $1.25 |
+| E | 50 bps | $1.25 |
+| F | 25 bps | $5.00 |
+
+The adjustment raises each eligible opening BUY price and lowers each eligible opening SELL price by the stated basis-point fraction. The commission is a separate cash charge on each committed fill. Fixed USD fees have greater proportional impact on smaller accounts and smaller orders. These illustrative assumptions do not estimate spread, market impact, or liquidity from daily OHLCV.
+
+Results are returned in scenario order. Each `comparison` preserves equity paths, performance metrics, fills, orders, and pairwise differences. Each row of `differences_vs_zero_cost` subtracts that portfolio's scenario A outcome from the current scenario in final USD equity, return percentage points, executed orders, and gross filled shares across BUYs and SELLs.
+
+Orders are sized in whole shares using decision-close equity. Subsequent affordability is checked at the adjusted execution price plus commission. A higher-cost scenario can reject a full BUY or change cash and the size of a later trade. Final-equity differences therefore include changes in exposure and portfolio path as well as modeled execution prices and direct commissions. Returns need not move monotonically with the cost assumptions.
+
+Outstanding orders stay visible in each comparison. A rejected mean-reversion exit raises `CostScenarioFailed` with the scenario and the original `MeanReversionExitRejected` as its cause. The analysis returns its scenario collection only after all six comparisons succeed.
+
+The daily-bar simulation assumes full fills at modeled next-open prices and marks open positions at the final close. These tests establish simulation behavior on synthetic prices. They provide no evidence of statistical significance or real-world profitability.
+
 ## Yahoo Finance daily history
 
 Use this command from the repository root once you have permission for automated acquisition and local storage. The requested range is inclusive, so the command sends an exclusive Yahoo end date of 2026-01-01.
