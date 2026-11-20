@@ -4,7 +4,7 @@ from decimal import Decimal, localcontext
 
 from ._money import USD_CONTEXT, decimal_amount
 from .daily_bars import PriceAdjustment
-from .orders import OrderSide, OrderState
+from .orders import OrderSide, OrderSnapshot, OrderState
 from .replay import MarketEvent
 from .signals import SessionContext, SignalEvent
 
@@ -12,6 +12,20 @@ _SYMBOL = "SPY"
 _LOOKBACK_INTERVALS = 5
 _HOLDING_SESSIONS = 5
 _ENTRY_PRICE_RATIO = Decimal("0.97")
+
+
+class MeanReversionExitRejected(RuntimeError):
+    """A rejected exit left the mean-reversion position open."""
+
+    def __init__(self, rejection: OrderSnapshot) -> None:
+        self.rejection = rejection
+        order = rejection.order
+        reason = rejection.rejection_reason or "reason unavailable"
+        super().__init__(
+            f"{order.symbol} mean-reversion exit {order.order_id!r} "
+            f"from decision session {order.decision_session} was rejected "
+            f"and left the position open ({reason})"
+        )
 
 
 def _entry_triggered(current: MarketEvent, reference: MarketEvent) -> bool:
@@ -53,7 +67,7 @@ def short_term_mean_reversion(
             and latest.order.side is OrderSide.SELL
             and latest.state is OrderState.REJECTED
         ):
-            return ()
+            raise MeanReversionExitRejected(latest)
         if (
             latest is None
             or latest.order.side is not OrderSide.BUY

@@ -6,12 +6,16 @@ import pytest
 
 from trading_research import backtest
 from trading_research.backtest import run_backtest
+from trading_research.coordinator import ExecutionCoordinator
 from trading_research.daily_bars import (
     DailyBar,
     DatasetMetadata,
     PriceAdjustment,
 )
-from trading_research.mean_reversion import short_term_mean_reversion
+from trading_research.mean_reversion import (
+    MeanReversionExitRejected,
+    short_term_mean_reversion,
+)
 from trading_research.orders import OrderSide, OrderState
 from trading_research.signals import SignalEvent, generate_signals
 
@@ -223,22 +227,96 @@ def test_rejected_entry_rearms_after_recovery_and_a_fresh_crossing():
     assert result.sessions[-1].portfolio.positions == {"SPY": 11}
 
 
-def test_rejected_exit_keeps_shares_and_does_not_repeat_the_exit():
+def test_rejected_exit_aborts_with_rejection_and_accounting_intact(monkeypatch):
     spy = dataset([100] * 5 + [97, 90, 80, 50, 30, 5, 1, 2, 3])
+    execute = ExecutionCoordinator.execute
+    attempts = []
+    contexts = []
+
+    def record_execution(coordinator, order_id, proposal):
+        outcome = execute(coordinator, order_id, proposal)
+        attempts.append((coordinator, outcome))
+        return outcome
+
+    def strategy(context):
+        contexts.append(context)
+        return short_term_mean_reversion(context)
+
+    monkeypatch.setattr(ExecutionCoordinator, "execute", record_execution)
+    with pytest.raises(MeanReversionExitRejected) as failure:
+        run(spy, strategy=strategy, bps=0, fee=50)
+
+    (_, filled), (coordinator, rejected) = attempts
+    assert filled.state is OrderState.FILLED
+    assert rejected.state is OrderState.REJECTED
+    assert rejected.order.side is OrderSide.SELL
+    assert rejected.order.quantity == 10
+    assert rejected.order.decision_session == day(11)
+    assert rejected.order.order_id == "2025-02-13:SPY"
+    assert rejected.fill is None
+    assert "commission exceeds proceeds" in rejected.rejection_reason
+
+    error = failure.value
+    assert error.rejection is rejected
+    for detail in ("SPY", "2025-02-13", rejected.order.order_id,
+                   rejected.rejection_reason, "left the position open"):
+        assert detail in str(error)
+
+    assert [context.session_date for context in contexts] == [
+        day(index) for index in range(1, 13)
+    ]
+    assert contexts[-2].last_order_outcome("SPY") is filled
+    assert contexts[-1].execution.outcomes == (rejected,)
+    assert coordinator.order_snapshot(rejected.order.order_id) is rejected
+    assert coordinator.order_history()[-1] is rejected
+
+    trade, = coordinator.portfolio_history()
+    assert trade.fill is filled.fill
+    assert (trade.fill.side, trade.fill.quantity, trade.fill.price) == (
+        OrderSide.BUY, 10, Decimal("90")
+    )
+    assert trade.fill.execution_session == day(7)
+    assert trade.commission == trade.cash_after == Decimal("50")
+    portfolio = coordinator.portfolio_snapshot()
+    assert portfolio == contexts[-2].execution.portfolio
+    assert portfolio.positions == {"SPY": 10}
+    assert portfolio.cash == Decimal("50")
+    assert portfolio.cumulative_commissions == Decimal("50")
+
+
+def test_exit_pending_at_dataset_end_remains_outstanding():
+    spy = dataset([100] * 5 + [97, 90, 80, 50, 30, 5])
 
     result = run(spy, bps=0, fee=50)
 
     assert result.signals == (
         SignalEvent("SPY", day(6), 1), SignalEvent("SPY", day(11), 0)
     )
-    rejected, = result.rejected_orders
-    assert rejected.order.side is OrderSide.SELL
-    assert "commission exceeds proceeds" in rejected.rejection_reason
-    assert len(result.fills) == 1
+    pending, = result.outstanding_orders
+    assert pending.state is OrderState.ACCEPTED
+    assert pending.order.side is OrderSide.SELL
+    assert pending.order.decision_session == day(11)
+    assert pending.fill is None
+    assert result.rejected_orders == ()
+    trade, = result.transactions
+    assert trade.fill.side is OrderSide.BUY
+    assert trade.commission == Decimal("50")
     final = result.sessions[-1].portfolio
     assert final.positions == {"SPY": 10}
     assert final.cash == Decimal("50")
     assert final.cumulative_commissions == Decimal("50")
+
+
+def test_rejected_exit_failure_is_deterministic():
+    spy = dataset([100] * 5 + [97, 90, 80, 50, 30, 5, 1])
+
+    with pytest.raises(MeanReversionExitRejected) as first:
+        run(spy, bps=0, fee=50)
+    with pytest.raises(MeanReversionExitRejected) as second:
+        run(spy, bps=0, fee=50)
+
+    assert first.value.rejection == second.value.rejection
+    assert str(first.value) == str(second.value)
 
 
 def test_strategy_feedback_is_immutable_and_cannot_see_the_next_open():
