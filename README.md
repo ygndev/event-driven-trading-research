@@ -4,7 +4,7 @@ The research goal is to study how the timing of market events, order execution, 
 
 Planned work includes historical market data ingestion and replay, event-driven backtesting, simulated order fills and transaction costs, and reproducible experiment reporting.
 
-The current repository contains a daily market data contract, a Yahoo Finance ingestion workflow, deterministic daily replay, a session-level signal interface, an order ledger, and portfolio accounting. Strategies, backtesting, and execution simulation are pending.
+The current repository contains a daily market data contract, a Yahoo Finance ingestion workflow, deterministic daily replay, a session-level signal interface, an order ledger, portfolio accounting, and standalone open-price execution proposals. Strategies and backtest integration are pending.
 
 ## Daily market data
 
@@ -50,6 +50,16 @@ Balances, fees, and values use `Decimal`. Integers and decimals retain their val
 `snapshot()` returns detached, read-only cash, holdings, and cumulative fees. `history()` returns immutable transaction records in application order, each with its original fill, commission, and resulting cash. `mark_to_market(snapshot, prices)` adds cash and the marked value of all open positions. It requires positive finite caller-supplied prices for every holding and never fetches or carries forward quotes. An empty portfolio values to cash.
 
 For lifecycle-checked fills, pass the `Fill` recorded by `OrderLedger` to the portfolio. The two updates are independent and non-atomic. An order ledger can record a fill that portfolio accounting subsequently rejects. Fill validation establishes lifecycle and accounting consistency within each ledger. Economic realism and the quality of valuation marks depend on the caller's inputs. This in-memory ledger covers single-currency cash and shares. Settlement, cost basis, P&L reporting, and corporate actions are outside its scope.
+
+## Next-session open execution
+
+Create one `NextOpenExecution(adjustment_bps=..., commission=...)` per sequential simulation run. Call `propose(order, bars, metadata)` with an accepted `OrderSnapshot`, or a `MarketOrder` whose acceptance the caller has confirmed. Supply the instrument's daily bars in ascending session order. The model uses the reported open of the first observed bar strictly after the decision session and on or after any explicit eligibility date. No eligible bar means no proposal. Calendar gaps require no date inference. Each order ID can yield one proposal per model instance.
+
+Only data declared RAW is eligible. The model rejects both split-adjusted and total-return-adjusted data, including split-adjusted Yahoo ingestion output. A RAW declaration still depends on source provenance. The model never reconstructs as-traded prices.
+
+The modeled price is `open × (1 + bps / 10000)` for BUY and `open × (1 − bps / 10000)` for SELL. Basis points must be finite and nonnegative, and the result must be positive. The adjustment is a hypothetical execution disadvantage. A separate fixed USD commission is reported once per proposed full fill. Prices, basis points, and fees use the accounting decimal policy, with exact arithmetic checked at 34 significant digits and no tick-size rounding.
+
+A `ProposedExecution` contains the `Fill`, commission, reference open, and basis points. The caller retains responsibility for subsequent order and portfolio validation and commitment. This model uses daily observations and cannot assess liquidity, queue position, spread, market impact, or exchange matching.
 
 ## Yahoo Finance daily history
 

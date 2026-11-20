@@ -2,40 +2,11 @@
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from decimal import (
-    Context,
-    Decimal,
-    Inexact,
-    InvalidOperation,
-    Overflow,
-    localcontext,
-)
+from decimal import Decimal, localcontext
 from types import MappingProxyType
 
+from ._money import USD_CONTEXT, Money, decimal_amount, to_decimal
 from .orders import Fill, OrderSide
-
-Money = int | float | Decimal
-
-# Keep USD calculations independent of the caller's decimal context.
-_USD_CONTEXT = Context(prec=34, traps=[Inexact, InvalidOperation, Overflow])
-
-
-def _to_decimal(value: Money) -> Decimal:
-    return Decimal(str(value)) if isinstance(value, float) else Decimal(value)
-
-
-def _usd(value: Money, field: str, *, allow_zero: bool = False) -> Decimal:
-    if isinstance(value, bool) or not isinstance(value, (int, float, Decimal)):
-        raise ValueError(f"{field} must be a numeric USD amount")
-    amount = _to_decimal(value)
-    if (
-        not amount.is_finite()
-        or amount < 0
-        or (amount == 0 and not allow_zero)
-    ):
-        sign = "nonnegative" if allow_zero else "positive"
-        raise ValueError(f"{field} must be finite and {sign}")
-    return amount
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,7 +36,7 @@ class PortfolioLedger:
     """Book supplied fills against USD cash and long-only holdings."""
 
     def __init__(self, initial_cash: Money) -> None:
-        self._initial_cash = _usd(initial_cash, "initial cash")
+        self._initial_cash = decimal_amount(initial_cash, "initial cash")
         self._cash = self._initial_cash
         self._positions: dict[str, int] = {}
         self._commissions = Decimal(0)
@@ -82,12 +53,12 @@ class PortfolioLedger:
                 f"fill for order {order_id!r} was already applied"
             )
 
-        fee = _usd(commission, "commission", allow_zero=True)
+        fee = decimal_amount(commission, "commission", allow_zero=True)
         # Fill already validates the price, quantity, side, and identifiers.
-        price = _to_decimal(fill.price)
+        price = to_decimal(fill.price)
         held = self._positions.get(fill.symbol, 0)
 
-        with localcontext(_USD_CONTEXT):
+        with localcontext(USD_CONTEXT):
             notional = price * fill.quantity
             if fill.side is OrderSide.BUY:
                 debit = notional + fee
@@ -133,10 +104,12 @@ def mark_to_market(
 ) -> Decimal:
     """Value a snapshot in USD using explicit prices for all open holdings."""
     equity = portfolio.cash
-    with localcontext(_USD_CONTEXT):
+    with localcontext(USD_CONTEXT):
         for symbol, quantity in portfolio.positions.items():
             if prices is None or symbol not in prices:
                 raise ValueError(f"missing valuation price for {symbol!r}")
-            price = _usd(prices[symbol], f"valuation price for {symbol!r}")
+            price = decimal_amount(
+                prices[symbol], f"valuation price for {symbol!r}"
+            )
             equity += quantity * price
     return equity

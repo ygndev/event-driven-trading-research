@@ -2,8 +2,11 @@
 
 from dataclasses import dataclass
 from datetime import date, datetime
+from decimal import Decimal
 from enum import Enum
 from math import isfinite
+
+from ._money import Money
 
 
 class OrderSide(Enum):
@@ -96,7 +99,7 @@ class Fill:
     execution_session: date
     side: OrderSide
     quantity: int
-    price: int | float
+    price: Money
 
     def __post_init__(self) -> None:
         _validate_order_fields(
@@ -106,8 +109,9 @@ class Fill:
         price = self.price
         if (
             isinstance(price, bool)
-            or not isinstance(price, (int, float))
+            or not isinstance(price, (int, float, Decimal))
             or (isinstance(price, float) and not isfinite(price))
+            or (isinstance(price, Decimal) and not price.is_finite())
             or price <= 0
         ):
             raise ValueError("price must be a finite, positive number")
