@@ -4,7 +4,7 @@ The research goal is to study how the timing of market events, order execution, 
 
 Planned work includes historical market data ingestion and replay, event-driven backtesting, simulated order fills and transaction costs, and reproducible experiment reporting.
 
-The current repository contains a daily market data contract, a Yahoo Finance ingestion workflow, deterministic daily replay, a session-level signal interface, an order ledger, portfolio accounting, and coordinated open-price execution. Strategies and backtest integration are pending.
+The current repository contains a daily market data contract, a Yahoo Finance ingestion workflow, deterministic daily replay, a session-level signal interface, an order ledger, portfolio accounting, target-weight order planning, and coordinated open-price execution. Strategies and backtest integration are pending.
 
 ## Daily market data
 
@@ -30,6 +30,16 @@ Pass the same datasets and a callable to `generate_signals(datasets, strategy)` 
 The strategy receives an immutable `SessionContext` with `session_date`, the current session's `events`, and `history(symbol)`. History includes observed events through that session, oldest first. A retained context keeps the same history as replay advances. Missing bars stay absent.
 
 Return an iterable of `SignalEvent(symbol, decision_session, target_exposure)`, or an empty iterable. The exposure is a long-only research target from 0 to 1. It expresses research intent. Execution requires a separate order decision. The decision date must match the context, and the symbol must have been observed by that session. At most one signal per symbol is accepted per session. Results are ordered by decision session and symbol. Repeated output depends on the strategy being deterministic.
+
+## Target-weight order planning
+
+Call `plan_orders(targets, portfolio_snapshot, session_context)` from `trading_research.planning`. Each target is a `SignalEvent` for the completed decision session, and its exposure is a fraction of total portfolio equity. A nonempty batch is a complete allocation and must explicitly cover every open holding. When a new signal is missing, carry its previous weight forward into that allocation. Omitting an open holding from a nonempty batch is an error. An empty batch requests no changes. A zero target liquidates an open position. Duplicate targets and aggregate weights above 100% are rejected.
+
+Equity and sizing use only RAW closing observations from the supplied decision session. Every holding and positive target needs an observed finite positive close. A zero target for an unheld symbol requires no mark. Missing marks cause an error and history is never used to fill the gap.
+
+The target share count is `floor(equity × weight / close)`. The planner uses the shared Decimal policy for exact arithmetic and floors the nonnegative quotient to whole shares without rounding the notional. It proposes the difference from current holdings, with SELL orders first and symbols in lexicographic order within each side. Order IDs are stable for each decision session and symbol. Eligibility starts strictly after the decision session and no later session date is inferred.
+
+The allocation is bounded by equity at the reference closes before fees. The planner does not spend or reserve cash or credit sale proceeds. BUY proposals may depend on earlier sales booking successfully and remain subject to execution-time cash and holdings checks. Overnight gaps, execution adjustments, and commissions can make the proposed allocation infeasible. Planning returns immutable order specifications. Registration, acceptance, and coordinated execution are separate steps.
 
 ## Market order lifecycle
 
@@ -69,7 +79,7 @@ Use the current order snapshot to price a proposal with `NextOpenExecution`, the
 
 Insufficient cash or holdings and commissions exceeding sale proceeds produce a terminal REJECTED order with a reason. The portfolio is unchanged. Invalid proposals or unexpected exceptions preserve both ledgers and propagate to the caller. An unexpected staging failure can be retried using the same proposal.
 
-Calls are processed sequentially in the order supplied. Earlier bookings change cash and holdings available to later orders. Atomicity applies to this in-memory coordinator under sequential access. Its state is lost on process exit, and callers must serialize access. The coordinator uses the proposal's supplied opening price and execution session, and relies on the execution model for observed-bar selection. Strategy sizing, settlement, liquidity, and live brokerage remain outside this workflow.
+Calls are processed sequentially in the order supplied. Earlier bookings change cash and holdings available to later orders. Atomicity applies to this in-memory coordinator under sequential access. Its state is lost on process exit, and callers must serialize access. The coordinator uses the proposal's supplied opening price and execution session, and relies on the execution model for observed-bar selection. Order planning is separate from the coordinator. Settlement, liquidity, and live brokerage remain outside this workflow.
 
 ## Yahoo Finance daily history
 
