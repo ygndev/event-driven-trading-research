@@ -1,0 +1,142 @@
+"""USD cash and whole-share position accounting for supplied fills."""
+
+from collections.abc import Mapping
+from dataclasses import dataclass
+from decimal import (
+    Context,
+    Decimal,
+    Inexact,
+    InvalidOperation,
+    Overflow,
+    localcontext,
+)
+from types import MappingProxyType
+
+from .orders import Fill, OrderSide
+
+Money = int | float | Decimal
+
+# Keep USD calculations independent of the caller's decimal context.
+_USD_CONTEXT = Context(prec=34, traps=[Inexact, InvalidOperation, Overflow])
+
+
+def _to_decimal(value: Money) -> Decimal:
+    return Decimal(str(value)) if isinstance(value, float) else Decimal(value)
+
+
+def _usd(value: Money, field: str, *, allow_zero: bool = False) -> Decimal:
+    if isinstance(value, bool) or not isinstance(value, (int, float, Decimal)):
+        raise ValueError(f"{field} must be a numeric USD amount")
+    amount = _to_decimal(value)
+    if (
+        not amount.is_finite()
+        or amount < 0
+        or (amount == 0 and not allow_zero)
+    ):
+        sign = "nonnegative" if allow_zero else "positive"
+        raise ValueError(f"{field} must be finite and {sign}")
+    return amount
+
+
+@dataclass(frozen=True, slots=True)
+class PortfolioTransaction:
+    """A fill applied once, with its USD fee and resulting cash balance."""
+
+    fill: Fill
+    commission: Decimal
+    cash_after: Decimal
+
+
+@dataclass(frozen=True, slots=True)
+class PortfolioSnapshot:
+    """Cash, open holdings, and cumulative commissions at one ledger state."""
+
+    initial_cash: Decimal
+    cash: Decimal
+    positions: Mapping[str, int]
+    cumulative_commissions: Decimal
+
+    def __post_init__(self) -> None:
+        positions = MappingProxyType(dict(self.positions))
+        object.__setattr__(self, "positions", positions)
+
+
+class PortfolioLedger:
+    """Book supplied fills against USD cash and long-only holdings."""
+
+    def __init__(self, initial_cash: Money) -> None:
+        self._initial_cash = _usd(initial_cash, "initial cash")
+        self._cash = self._initial_cash
+        self._positions: dict[str, int] = {}
+        self._commissions = Decimal(0)
+        # Order IDs are unique because the order ledger permits one full fill.
+        self._transactions: dict[str, PortfolioTransaction] = {}
+
+    def apply_fill(self, fill: Fill, commission: Money = 0) -> None:
+        """Book a fill and its supplied commission in this ledger."""
+        if not isinstance(fill, Fill):
+            raise ValueError("expected a Fill")
+        order_id = fill.order_id
+        if order_id in self._transactions:
+            raise ValueError(
+                f"fill for order {order_id!r} was already applied"
+            )
+
+        fee = _usd(commission, "commission", allow_zero=True)
+        # Fill already validates the price, quantity, side, and identifiers.
+        price = _to_decimal(fill.price)
+        held = self._positions.get(fill.symbol, 0)
+
+        with localcontext(_USD_CONTEXT):
+            notional = price * fill.quantity
+            if fill.side is OrderSide.BUY:
+                debit = notional + fee
+                if debit > self._cash:
+                    raise ValueError(f"order {order_id!r}: insufficient cash")
+                cash = self._cash - debit
+                quantity = held + fill.quantity
+            else:
+                if fill.quantity > held:
+                    raise ValueError(
+                        f"order {order_id!r}: insufficient holdings"
+                    )
+                if fee > notional:
+                    raise ValueError(
+                        f"order {order_id!r}: commission exceeds proceeds"
+                    )
+                cash = self._cash + (notional - fee)
+                quantity = held - fill.quantity
+            commissions = self._commissions + fee
+
+        transaction = PortfolioTransaction(fill, fee, cash)
+        if quantity:
+            self._positions[fill.symbol] = quantity
+        else:
+            del self._positions[fill.symbol]
+        self._cash = cash
+        self._commissions = commissions
+        self._transactions[order_id] = transaction
+
+    def snapshot(self) -> PortfolioSnapshot:
+        """Return a detached, read-only snapshot of the current state."""
+        return PortfolioSnapshot(
+            self._initial_cash, self._cash, self._positions, self._commissions
+        )
+
+    def history(self) -> tuple[PortfolioTransaction, ...]:
+        """Return the applied fills in transaction order."""
+        return tuple(self._transactions.values())
+
+
+def mark_to_market(
+    portfolio: PortfolioSnapshot, prices: Mapping[str, Money] | None = None
+) -> Decimal:
+    """Value a snapshot in USD using explicit prices for all open holdings."""
+    equity = portfolio.cash
+    with localcontext(_USD_CONTEXT):
+        for symbol, quantity in portfolio.positions.items():
+            if prices is None or symbol not in prices:
+                raise ValueError(f"missing valuation price for {symbol!r}")
+            price = _usd(prices[symbol], f"valuation price for {symbol!r}")
+            equity += quantity * price
+    return equity

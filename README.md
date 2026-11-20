@@ -4,7 +4,7 @@ The research goal is to study how the timing of market events, order execution, 
 
 Planned work includes historical market data ingestion and replay, event-driven backtesting, simulated order fills and transaction costs, and reproducible experiment reporting.
 
-The current repository contains a daily market data contract, a Yahoo Finance ingestion workflow, deterministic daily replay, a session-level signal interface, and an in-memory order ledger. Strategies, backtesting, and execution simulation are pending.
+The current repository contains a daily market data contract, a Yahoo Finance ingestion workflow, deterministic daily replay, a session-level signal interface, an order ledger, and portfolio accounting. Strategies, backtesting, and execution simulation are pending.
 
 ## Daily market data
 
@@ -40,6 +40,16 @@ Registering an order records CREATED. A CREATED order can move to ACCEPTED or RE
 `record_fill(fill)` takes an externally supplied simulated execution result with the order ID, symbol, execution session, side, quantity, and price. It requires an accepted order, matching symbol and side, the full ordered quantity, and a finite positive price. The execution session must be strictly later than the decision session and on or after the supplied eligibility bound, if present.
 
 The ledger compares session dates without inferring an exchange calendar. It keeps history in memory and validates the order record and timing constraints. Assessing whether a fill was economically realistic or whether a SELL was covered by an existing long position requires additional execution and holdings data.
+
+## Portfolio accounting
+
+Create a `PortfolioLedger(initial_cash)` from `trading_research.portfolio` with positive finite USD capital. Use `apply_fill(fill, commission=0)` to book a whole-share fill and its supplied nonnegative commission. BUY debits the full cost plus commission and requires sufficient cash. SELL credits proceeds less commission and requires sufficient shares and proceeds to cover the fee. Closed positions are removed. Successful fills are booked once per order ID, and validation failures leave the ledger unchanged.
+
+Balances, fees, and values use `Decimal`. Integers and decimals retain their values. Float inputs, including existing fill prices, are interpreted via their shortest decimal string. Calculations use a private 34-significant-digit context and raise a decimal arithmetic error if a result cannot be represented exactly. There is no rounding to cents. At unchanged marks equal to a fill's price for the traded instrument, a fill moves value between cash and holdings and reduces equity only by the commission.
+
+`snapshot()` returns detached, read-only cash, holdings, and cumulative fees. `history()` returns immutable transaction records in application order, each with its original fill, commission, and resulting cash. `mark_to_market(snapshot, prices)` adds cash and the marked value of all open positions. It requires positive finite caller-supplied prices for every holding and never fetches or carries forward quotes. An empty portfolio values to cash.
+
+For lifecycle-checked fills, pass the `Fill` recorded by `OrderLedger` to the portfolio. The two updates are independent and non-atomic. An order ledger can record a fill that portfolio accounting subsequently rejects. Fill validation establishes lifecycle and accounting consistency within each ledger. Economic realism and the quality of valuation marks depend on the caller's inputs. This in-memory ledger covers single-currency cash and shares. Settlement, cost basis, P&L reporting, and corporate actions are outside its scope.
 
 ## Yahoo Finance daily history
 
