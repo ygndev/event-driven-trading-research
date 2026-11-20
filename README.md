@@ -108,6 +108,16 @@ Drawdown is the largest peak-to-trough decline, expressed as a nonnegative fract
 
 USD totals use the existing exact Decimal accounting policy. Ratios and statistical calculations use a separate local 34-digit Decimal context that permits rounding for division, roots, and powers. The evaluator rejects empty snapshots, nonpositive equity, inconsistent cash and holdings, or unordered session dates.
 
+## SPY time-series momentum
+
+Pass `time_series_momentum` from `trading_research.momentum` as the strategy callable. The research hypothesis is that positive trailing price returns may indicate persistent trends. The 63-interval lookback and 21-observation rebalance cadence are fixed initial research assumptions.
+
+Momentum is `current_close / close_63_observations_ago − 1`. The rule compares the two positive finite RAW closes directly to determine the sign without dividing. It needs 64 observed SPY closes for its first decision, then evaluates at observations 85, 106, and every 21 thereafter. Missing SPY observations do not advance the count. Warm-up and between-decision sessions emit no signal. A scheduled decision emits 100% SPY for positive momentum or an explicit 0% for zero or negative momentum. Sizing runs after the decision close, and execution is eligible at the next observed SPY open.
+
+In the synthetic round trip, the 64th close was $110 versus a $90 lookback close, so a $1,000 portfolio targeted nine shares. The next open was $108, and a 25 bp adjustment gave a $108.27 BUY fill. The 85th close was $100 versus $120 at the lookback, so the strategy targeted liquidation. The next open of $105 gave a $104.7375 SELL fill. With $1.25 commission per fill, the run ended with $965.7075 cash and equity and zero shares.
+
+This is a price-only rule, so its signal omits dividend returns. Real ETF studies require a defensible policy for splits, dividends, and price provenance. A 100% target can also be rejected when the next-open fill cost plus commission exceeds available cash. Synthetic tests exercise the implementation and do not establish historical profitability.
+
 ## Yahoo Finance daily history
 
 Use this command from the repository root once you have permission for automated acquisition and local storage. The requested range is inclusive, so the command sends an exclusive Yahoo end date of 2026-01-01.
