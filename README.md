@@ -61,6 +61,12 @@ Balances, fees, and values use `Decimal`. Integers and decimals retain their val
 
 Direct calls to the standalone ledgers are independent and non-atomic. An order ledger can record a fill that portfolio accounting subsequently rejects. Use the coordinator for consistent updates across both ledgers. Fill validation establishes lifecycle and accounting consistency within each ledger. Economic realism and the quality of valuation marks depend on the caller's inputs. This in-memory ledger covers single-currency cash and shares. Settlement, cost basis, and P&L reporting are outside the fill-accounting scope.
 
+**Fill chronology.** Portfolio fills must be booked in nondecreasing execution-session order across all symbols. Fills on the same date use the supplied order and each booking sees the cash and holdings from preceding bookings. The daily runner supplies SELL before BUY, with the documented tie-breaks. The date check uses committed fills. Order registration and acceptance do not advance it. A backdated fill raises `ValueError` with the order ID, symbol, attempted date and last committed fill date. The coordinator keeps the accepted order and both committed histories intact.
+
+With $100 and a flat SPY position, a January 5 BUY of one share at $100 leaves $0 and one share. A submission to sell that share for $120 dated January 4 raises the chronology error and leaves the January 5 BUY as the only booked fill. A valid January 8 sale of that share at $120 leaves $120 and a flat position with two committed fills. Both examples use zero fees.
+
+The guarantee is at daily-session granularity. Recorded closes, effective splits and dividend payments have their own date checks. Standalone callers still need to sequence those actions. For example, a payment dated January 6 can be booked after a January 8 fill when the recorded-close checks allow it. The daily runner sequences declared payments, including non-session dates, in its own replay.
+
 ## Standalone corporate-action accounting
 
 `StockSplit` and `CashDividend` in `trading_research.corporate_actions` describe declared events. These records establish the supplied dates and amounts. Historical announcement timing and data provenance require separate evidence.

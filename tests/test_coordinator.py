@@ -20,6 +20,7 @@ from trading_research.orders import (
     OrderState,
 )
 from trading_research.portfolio import PortfolioLedger
+from trading_research.replay import MarketOpen
 
 FRIDAY = date(2025, 1, 3)
 MONDAY = date(2025, 1, 6)
@@ -105,6 +106,49 @@ def test_coordinated_round_trip_books_prices_and_commissions_once():
     assert orders.snapshot("sell").state is OrderState.ACCEPTED
     assert portfolio.snapshot().cash == Decimal("1000")
     assert portfolio.history() == ()
+
+
+def test_backdated_sell_cannot_use_shares_from_the_audited_later_buy():
+    decision, sell_day, buy_day = (date(2024, 1, day) for day in (2, 4, 5))
+    buy = MarketOrder("buy-later", "SPY", OrderSide.BUY, 1, decision)
+    sell = MarketOrder("sell-earlier", "SPY", OrderSide.SELL, 1, decision)
+    coordinator = ExecutionCoordinator(OrderLedger(), PortfolioLedger(100))
+    coordinator.submit_orders((buy, sell))
+    model = NextOpenExecution(adjustment_bps=0, commission=0)
+
+    purchase = model.propose_at_open(
+        coordinator.order_snapshot(buy.order_id),
+        MarketOpen("SPY", buy_day, 100, PriceAdjustment.RAW),
+    )
+    assert coordinator.execute(buy.order_id, purchase).state is OrderState.FILLED
+    before = state_of(coordinator, buy.order_id, sell.order_id)
+    assert before[2].cash == 0 and before[2].positions == {"SPY": 1}
+    assert [trade.fill for trade in before[3]] == [purchase.fill]
+    sale = model.propose_at_open(
+        coordinator.order_snapshot(sell.order_id),
+        MarketOpen("SPY", sell_day, 120, PriceAdjustment.RAW),
+    )
+    with pytest.raises(
+        ValueError, match="order 'sell-earlier': SPY fill on 2024-01-04 .*2024-01-05",
+    ):
+        coordinator.execute(sell.order_id, sale)
+
+    assert state_of(coordinator, buy.order_id, sell.order_id) == before
+    assert coordinator.order_snapshot(sell.order_id).state is OrderState.ACCEPTED
+
+    later_sale = proposal_for(
+        sell, session=date(2024, 1, 8), price="120", commission="0",
+    )
+    outcome = coordinator.execute(sell.order_id, later_sale)
+    assert outcome.state is OrderState.FILLED
+    assert outcome.fill is later_sale.fill
+    assert coordinator.order_history() == (*before[1], outcome)
+    assert tuple(trade.fill for trade in coordinator.portfolio_history()) == (
+        purchase.fill, later_sale.fill,
+    )
+    final = coordinator.portfolio_snapshot()
+    assert final.cash == 120 and final.positions == {}
+    assert final.cumulative_commissions == 0
 
 
 def test_cancellation_rejects_a_previously_priced_proposal_without_booking_it():

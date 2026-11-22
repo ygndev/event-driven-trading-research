@@ -93,7 +93,7 @@ class PortfolioLedger:
         return next(reversed(self._closing_positions), date.min)
 
     def apply_fill(self, fill: Fill, commission: Money = 0) -> None:
-        """Book a fill and its supplied commission in this ledger."""
+        """Book a fill and supplied commission in nondecreasing session order."""
         if not isinstance(fill, Fill):
             raise ValueError("expected a Fill")
         order_id = fill.order_id
@@ -114,6 +114,13 @@ class PortfolioLedger:
             payment.session_date > session for payment in self._payments.values()
         ):
             raise ValueError("cannot book a fill before an applied dividend payment")
+
+        latest = next(reversed(self._transactions.values()), None)
+        if latest is not None and session < latest.fill.execution_session:
+            raise ValueError(
+                f"order {order_id!r}: {fill.symbol} fill on {session} precedes "
+                f"the latest committed fill on {latest.fill.execution_session}"
+            )
 
         fee = decimal_amount(commission, "commission", allow_zero=True)
         # Fill already validates the price, quantity, side, and identifiers.

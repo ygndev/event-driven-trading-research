@@ -84,6 +84,43 @@ def test_buy_then_sell_conserves_marked_equity_apart_from_fees():
     assert second.fill.price == 27.25
 
 
+def test_only_same_or_later_session_buys_can_spend_committed_sale_proceeds():
+    ledger = PortfolioLedger(100)
+    ledger.apply_fill(trade("entry", OrderSide.BUY, 1, 100))
+    ledger.apply_fill(trade("exit", OrderSide.SELL, 1, 115, session=NEXT), 1)
+    before, history = ledger.snapshot(), ledger.history()
+    assert before.cash == 114 and before.positions == {}
+    assert before.cumulative_commissions == 1
+    buy = trade("rotate", OrderSide.BUY, 1, 110, symbol="QQQ")
+
+    with pytest.raises(
+        ValueError, match="order 'rotate': QQQ fill on 2025-01-06 .*2025-01-07",
+    ):
+        ledger.apply_fill(buy, 1)
+    assert ledger.snapshot() == before
+    assert ledger.history() == history
+
+    ledger.apply_fill(replace(buy, execution_session=NEXT), 1)
+    rotated = ledger.snapshot()
+    assert rotated.cash == 3 and rotated.positions == {"QQQ": 1}
+    assert rotated.cumulative_commissions == 2
+
+    later = date(2025, 1, 8)
+    ledger.apply_fill(trade("qqq-exit", OrderSide.SELL, 1, 120, symbol="QQQ", session=later), 1)
+    assert ledger.snapshot().cash == 122
+    assert ledger.snapshot().positions == {}
+    assert ledger.snapshot().cumulative_commissions == 3
+    assert [
+        (entry.fill.execution_session, entry.fill.side, entry.fill.symbol, entry.cash_after)
+        for entry in ledger.history()
+    ] == [
+        (FIRST, OrderSide.BUY, "SPY", 0),
+        (NEXT, OrderSide.SELL, "SPY", 114),
+        (NEXT, OrderSide.BUY, "QQQ", 3),
+        (later, OrderSide.SELL, "QQQ", 122),
+    ]
+
+
 def test_multiple_symbols_and_a_sale_that_leaves_one_share():
     ledger = PortfolioLedger(1000)
     ledger.apply_fill(trade("first", OrderSide.BUY, 2, 25.50), 0.20)
