@@ -6,6 +6,8 @@ Planned work includes historical market data ingestion and replay, event-driven 
 
 The current repository contains a daily market data contract, a Yahoo Finance ingestion workflow, deterministic daily replay, a session-level signal interface, an order ledger, portfolio accounting, target-weight order planning, and coordinated open-price execution. A deterministic daily backtest connects these components for synthetic research, with performance evaluation based on the resulting sessions and committed fills.
 
+Verification uses synthetic offline fixtures. The supported use is research simulation. Live trading and empirical profitability are outside the project's verified scope.
+
 ## Daily market data
 
 Import `DailyBar`, `DatasetMetadata`, `PriceAdjustment`, and `validate_daily_bars` from `trading_research.daily_bars`.
@@ -333,11 +335,20 @@ The stored source is the table returned by yfinance. Even with `repair=False` an
 
 Invalid responses fail without publishing a snapshot. The command reports other symbols independently and stops subsequent requests if Yahoo rate-limits it. Data and yfinance's local cache stay under the Git-ignored `data/` directory. Yahoo requires express prior permission for automated access or collection, and downloaded quotes may carry additional redistribution restrictions. [Yahoo Terms of Service](https://legal.yahoo.com/us/en/yahoo/terms/otos/index.html) · [Yahoo data permissions](https://legal.yahoo.com/us/en/yahoo/permissions/requests/index.html)
 
+## Code and data rights
+
+MIT is the preferred license for the original source code. The repository currently has no code license declaration. Before adding one, confirm the copyright holder's exact name, applicable year or years, and authority to license the code. Git author attribution alone leaves ownership unresolved. [MIT license text](https://opensource.org/license/mit)
+
+Test fixtures are synthetic and were created for this project. Python dependencies are installed separately and retain their own licenses and notices. Market data and provider payloads, including normalized copies, require independent rights to access, retain and redistribute. Publication of derived outputs can also be subject to provider terms. Keep licensed inputs and restricted outputs outside Git. [Licensed data pilot](docs/licensed_data_pilot_protocol.md) · [Massive Market Data Terms](https://massive.com/legal/market-data-terms-of-service)
+
 ## Local setup on Windows
 
-Run these PowerShell commands from the repository root with Python 3.11 or newer. The environment variables apply to the current PowerShell session.
+The package declares Python 3.11 or newer. The reference environment was tested on Windows x64 with CPython 3.11.9. The [Windows constraints](constraints-windows-py311.txt) record exact installed versions for that environment. Other operating systems and Python versions remain unverified. The constraints pin installed packages, while pip resolves the isolated build backend from `pyproject.toml`. [pip constraints documentation](https://pip.pypa.io/en/stable/user_guide/#constraints-files)
+
+Run these PowerShell commands from a checkout on D: using CPython 3.11.9. The environment variables apply to the current PowerShell session. Package installation can use an index. The tests use synthetic fixtures and run offline.
 
 ```powershell
+python --version
 New-Item -ItemType Directory -Force -Path .tmp, .cache\pip, .cache\python | Out-Null
 $env:TEMP = (Resolve-Path .tmp).Path
 $env:TMP = $env:TEMP
@@ -345,8 +356,13 @@ $env:PIP_CACHE_DIR = (Resolve-Path .cache\pip).Path
 $env:PYTHONPYCACHEPREFIX = (Resolve-Path .cache\python).Path
 
 python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -e '.[dev]'
-.\.venv\Scripts\python.exe -m pytest
+.\.venv\Scripts\python.exe -m pip install -c constraints-windows-py311.txt -e '.[dev]'
+.\.venv\Scripts\python.exe -m pip list --editable
+.\.venv\Scripts\python.exe -m pip check
+.\.venv\Scripts\python.exe -I -B -c 'import trading_research, trading_research.massive_history, trading_research.yahoo_history'
+.\.venv\Scripts\python.exe -m pytest -q
 ```
 
-The virtual environment, caches, and temporary files are local to the repository. Keep local datasets under `data/` and generated results under `outputs/`.
+pandas and yfinance are direct runtime requirements for the bundled Yahoo adapter. pandas also supplies the Windows `tzdata` dependency used by `zoneinfo`. pytest is available through the optional `dev` extra. setuptools builds the package. The constraints fix the tested dependency set while the package metadata retains its install ranges.
+
+The virtual environment, caches, and temporary files are local to the checkout. Keep provider data under `data/`, generated results under `outputs/`, and local credentials in ignored files.

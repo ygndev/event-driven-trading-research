@@ -1,0 +1,41 @@
+# Tested on Windows x64 (build 10.0.26300), CPython 3.11.9.
+# Use with pip install --constraint constraints-windows-py311.txt -e '.[dev]'.
+# These pins describe the installed environment. The isolated build resolves its backend separately.
+
+# Direct runtime requirements from pyproject.toml.
+pandas==3.1.1
+yfinance==1.8.0
+
+# Direct dev extra.
+pytest==9.2.0
+
+# Transitive runtime and test dependencies.
+beautifulsoup4==4.15.0
+certifi==2026.10.23
+cffi==2.1.1
+charset-normalizer==3.5.2
+colorama==0.4.6
+curl-cffi==0.17.0
+idna==3.20
+iniconfig==2.3.1
+lxml==6.1.3
+numpy==2.4.6
+packaging==26.3
+peewee==4.5.3
+platformdirs==4.14.7
+pluggy==1.7.0
+protobuf==7.36.2
+pycparser==3.12
+pygments==2.21.0
+python-dateutil==4.0.0
+pytz==2026.6
+requests==2.34.2
+soupsieve==4.1.2
+typing-extensions==4.16.0
+tzdata==2026.6
+urllib3==2.8.0
+websockets==17.4
+
+# Tools bundled into the tested CPython virtual environment.
+pip==24.0
+setuptools==65.5.0
