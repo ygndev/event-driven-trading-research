@@ -270,6 +270,37 @@ For file integrity, pass `source_path` and `source_sha256`. With an existing Yah
 
 The immutable report records blocking findings, warnings, unverified checks, and checks that passed. A clean schema and a matching calendar do not establish provider licensing, independent as-traded provenance, action completeness, or historical availability. Those remain separate requirements before licensed empirical backtesting.
 
+## Offline Massive daily history
+
+`parse_daily_aggregates` accepts parsed JSON from the Massive Stocks custom bars endpoint `/v2/aggs/ticker/{ticker}/range/1/day/{from}/{to}`. Pass the credential-free URL captured with the response, the expected ticker, the requested price convention, and the actual UTC retrieval time. The URL must use inclusive `YYYY-MM-DD` dates and explicitly specify `adjusted=false` for provider-reported RAW or `adjusted=true` for split-adjusted bars. The response's Boolean `adjusted` flag and case-sensitive `ticker` must agree with the request. Massive's flag concerns splits. The endpoint supplies no dividend-adjusted series. [Custom Bars](https://massive.com/docs/rest/stocks/aggregates/custom-bars) · [Stocks REST overview](https://massive.com/docs/rest/stocks/overview#aggregate-bars-ohlc) · [Massive adjustment FAQ](https://massive.com/knowledge-base/article/is-massives-stock-data-adjusted-for-splits-or-dividends)
+
+```python
+from trading_research.daily_bars import PriceAdjustment
+from trading_research.data_audit import audit_etf_data
+from trading_research.massive_history import parse_daily_aggregates
+
+capture = parse_daily_aggregates(
+    saved_payload,
+    request_url=saved_request_url,
+    expected_symbol="SPY",
+    adjustment=PriceAdjustment.RAW,
+    retrieved_at=saved_retrieval_utc,
+)
+report = audit_etf_data(
+    [capture.dataset], expected_sessions=exchange_sessions, calendar_range=calendar_bounds,
+)
+```
+
+The adapter maps `o`, `h`, `l`, `c`, and `v` to OHLCV and checks the existing bar contract. Volume must represent an exact nonnegative whole number. The `t` field is the integer Unix millisecond start of the daily window. The adapter requires midnight in `America/New_York` and uses that local date as the session label. Historical daylight-saving rules come from the IANA time zone. The window start supplies no trade time or information-availability timestamp. [Massive timestamp and request guide](https://massive.com/knowledge-base/article/how-should-i-go-about-reporting-a-possible-massive-data-discrepancy)
+
+The adapter handles one historical response with `status="OK"`. An empty response, a provider error, a `DELAYED` status, or a response with `next_url` raises an error. The retained request ID, request URL, retrieval time, and base aggregate count help identify the capture. `resultsCount` must match the row count, and `queryCount` must fit the base aggregate limit. A response within the limit can still have gaps. Pass a credible exchange calendar to the audit to check completeness. For stored files, pass the original source path and reference SHA-256 on the `AuditDataset` using `dataclasses.replace` before auditing. A consistent request and response establish the provider's declaration. Independent as-traded provenance remains unresolved. [Custom Bars response and limits](https://massive.com/docs/rest/stocks/aggregates/custom-bars) · [Massive status guide](https://massive.com/knowledge-base/article/how-quickly-can-i-access-massives-market-date)
+
+`parse_split` converts one current `/stocks/v1/splits` result. It maps `ticker` and `execution_date` to the symbol and effective session, and uses `split_to / split_from` for the exact new-to-old share ratio. It accepts forward and reverse splits and rejects stock dividends. Keep unresolved share changes visible when auditing coverage. [Massive Splits](https://massive.com/docs/rest/stocks/corporate-actions/splits)
+
+Cash dividends still require review before constructing `CashDividend`. The candidate fields are `id`, `ticker`, `ex_dividend_date`, `pay_date`, and USD `cash_amount`. Massive reports the as-paid amount, and `distribution_type` describes recurrence. Those fields alone leave the prior-close share basis unresolved when a split shares the ex-date, and a recurring fund distribution can include other cash components. Confirm the event is an ordinary USD distribution, verify both dates, and reconcile the amount to the prior-close basis before supplying it to the simulator. [Massive Dividends](https://massive.com/docs/rest/stocks/corporate-actions/dividends) · [Massive dividend types](https://massive.com/knowledge-base/article/what-are-the-different-types-of-dividends-that-massive-supports) · [Massive as-paid amounts](https://massive.com/knowledge-base/article/does-massive-adjust-historic-dividends-for-splits)
+
+Verification uses synthetic payloads only. Live response compatibility, per-symbol coverage, action completeness, the eligible-trade rules for daily open and close, and historical publication timing remain unverified. Confirm entitlement and rights to acquire, retain, and use snapshots and publish the intended research outputs before acquiring real data. [Provider due diligence](docs/market_data_provider_decision.md)
+
 ## Yahoo Finance daily history
 
 Use this command from the repository root once you have permission for automated acquisition and local storage. The requested range is inclusive, so the command sends an exclusive Yahoo end date of 2026-01-01.
