@@ -7,6 +7,7 @@ from decimal import Decimal
 from ._money import Money
 from .benchmark import (
     BenchmarkRun,
+    BuyAndHoldEntryError,
     CommonWindowBenchmarkComparison,
     _equity_difference,
     compare_spy_common_window,
@@ -25,21 +26,21 @@ _SCENARIOS = (
 
 
 class CostScenarioFailed(RuntimeError):
-    """A rejected mean-reversion exit stopped the cost analysis."""
+    """An invalid buy-and-hold entry or rejected exit stopped a cost scenario."""
 
     def __init__(
         self,
         scenario: str,
         adjustment_bps: Decimal,
         commission: Decimal,
-        rejection: MeanReversionExitRejected,
+        cause: BuyAndHoldEntryError | MeanReversionExitRejected,
     ) -> None:
         self.scenario = scenario
         self.adjustment_bps = adjustment_bps
         self.commission = commission
         super().__init__(
             f"cost scenario {scenario} ({adjustment_bps} bps, "
-            f"${commission} commission per fill) failed: {rejection}"
+            f"${commission} commission per fill) failed: {cause}"
         )
 
 
@@ -102,8 +103,8 @@ def run_transaction_cost_sensitivity(
 ) -> tuple[CostScenarioResult, ...]:
     """Run the six illustrative scenarios in order on one synthetic SPY dataset.
 
-    A rejected mean-reversion exit raises CostScenarioFailed with the original
-    exception as its cause. The analysis returns results only if every run succeeds.
+    An invalid buy-and-hold entry or rejected mean-reversion exit raises
+    CostScenarioFailed with the original exception as its cause.
     """
     if not isinstance(bars, Sequence):
         raise ValueError("bars must be a sequence of DailyBar records")
@@ -115,10 +116,10 @@ def run_transaction_cost_sensitivity(
                 metadata, observations, initial_cash=initial_cash,
                 adjustment_bps=adjustment_bps, commission=commission,
             )
-        except MeanReversionExitRejected as rejection:
+        except (BuyAndHoldEntryError, MeanReversionExitRejected) as error:
             raise CostScenarioFailed(
-                scenario, adjustment_bps, commission, rejection
-            ) from rejection
+                scenario, adjustment_bps, commission, error
+            ) from error
 
         zero_cost = results[0].comparison if results else comparison
         differences = tuple(

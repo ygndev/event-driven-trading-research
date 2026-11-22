@@ -6,6 +6,7 @@ import pytest
 
 from trading_research import benchmark
 from trading_research.benchmark import (
+    BuyAndHoldEntryError,
     compare_spy_benchmarks,
     compare_spy_common_window,
     compare_spy_mean_reversion_benchmarks,
@@ -57,6 +58,20 @@ def compare(
     )
 
 
+@pytest.fixture
+def completed_backtests(monkeypatch):
+    completed = []
+    run_backtest = benchmark.run_backtest
+
+    def record(*args, **kwargs):
+        backtest = run_backtest(*args, **kwargs)
+        completed.append(backtest)
+        return backtest
+
+    monkeypatch.setattr(benchmark, "run_backtest", record)
+    return completed
+
+
 def test_three_way_reversal_uses_equal_capital_costs_and_aligned_window():
     closes = [90] * 63 + [110] + [112] * 20 + [100, 106]
     closes[21] = 120
@@ -102,6 +117,10 @@ def test_three_way_reversal_uses_equal_capital_costs_and_aligned_window():
     assert holding.backtest.signals == (SignalEvent("SPY", ANCHOR, 1),)
     assert momentum.backtest.fills[0] == holding.backtest.fills[0]
     buy, = holding.backtest.fills
+    assert holding.entry is holding.backtest.order_history[-1]
+    assert holding.entry.state is OrderState.FILLED
+    assert holding.entry.fill is buy
+    assert momentum.entry is cash.entry is None
     assert (buy.execution_session, buy.side, buy.quantity, buy.price) == (
         FIRST_FILL, OrderSide.BUY, 9, Decimal("108.27")
     )
@@ -225,33 +244,62 @@ def test_future_open_changes_fill_but_never_anchor_signal_or_quantity():
         assert after.backtest.fills[0].price == Decimal("108.27")
 
 
-def test_unaffordable_first_open_is_rejected_without_retry_or_commission():
+def test_unaffordable_first_open_is_rejected_without_retry_or_commission(completed_backtests):
     bars = spy_bars([90] * 63 + [110, 120, 100])
 
-    result = compare(bars)
+    with pytest.raises(BuyAndHoldEntryError, match="insufficient cash") as failure:
+        compare(bars)
 
-    for run in (result.momentum, result.buy_and_hold):
-        assert run.backtest.fills == run.backtest.outstanding_orders == ()
-        rejected, = run.backtest.rejected_orders
+    error = failure.value
+    assert (error.symbol, error.anchor, error.status) == ("SPY", ANCHOR, "rejected")
+    momentum, holding = completed_backtests
+    assert error.entry is holding.rejected_orders[0]
+    for run in (momentum, holding):
+        assert run.fills == run.outstanding_orders == ()
+        rejected, = run.rejected_orders
+        assert rejected.order.quantity == 9
         assert "insufficient cash" in rejected.rejection_reason
-        assert run.metrics.total_commissions == 0
-        assert run.equity_path == result.cash.equity_path
+        assert all(session.equity == 1000 for session in run.sessions)
+        assert run.sessions[-1].portfolio.cumulative_commissions == 0
 
 
-def test_anchor_only_has_pending_orders_and_undefined_statistics():
-    result = compare(spy_bars([90] * 63 + [110]))
+def test_audited_rejected_entry_cannot_return_a_buy_and_hold_comparison(monkeypatch):
+    days = tuple(date(2024, 1, day) for day in (2, 3, 4, 5, 8, 9, 10, 11))
+    bars = spy_bars([100] * 6 + [101, 120], openings={7: 101}, dates=days)
 
-    assert result.start_session == result.end_session == ANCHOR
-    for run in (result.momentum, result.buy_and_hold):
-        pending, = run.backtest.outstanding_orders
-        assert pending.state is OrderState.ACCEPTED
-        assert pending.order.quantity == 9
-        assert run.backtest.fills == ()
-        assert run.equity_path == ((ANCHOR, Decimal("1000")),)
-        assert run.metrics.total_return == 0
-        assert run.metrics.annualized_return is None
-        assert run.metrics.annualized_volatility is None
-        assert run.metrics.sharpe_ratio is None
+    def unexpected_performance(*args, **kwargs):
+        pytest.fail("an invalid benchmark must fail before scoring")
+
+    monkeypatch.setattr(benchmark, "evaluate_performance", unexpected_performance)
+    failures = []
+    for _ in range(2):
+        with pytest.raises(BuyAndHoldEntryError, match=r"2024-01-09:SPY.*insufficient cash") as caught:
+            compare_mean_reversion(bars, bps=0, fee=0)
+        failures.append(caught.value)
+    error, repeated = failures
+    assert (error.symbol, error.anchor, error.status) == ("SPY", days[5], "rejected")
+    assert error.entry.order.order_id == "2024-01-09:SPY"
+    assert error.entry.order.quantity == 10
+    assert error.entry.order.decision_session == days[5]
+    assert error.entry.state is OrderState.REJECTED
+    assert error.entry.fill is None
+    assert str(repeated) == str(error)
+    assert repeated.entry == error.entry
+
+
+def test_momentum_anchor_only_reports_accepted_benchmark_entry(completed_backtests):
+    with pytest.raises(BuyAndHoldEntryError, match="outstanding at the final close") as failure:
+        compare(spy_bars([90] * 63 + [110]))
+
+    error = failure.value
+    assert (error.anchor, error.status) == (ANCHOR, "outstanding")
+    momentum, holding = completed_backtests
+    assert error.entry is holding.outstanding_orders[0]
+    for run in (momentum, holding):
+        pending, = run.outstanding_orders
+        assert (pending.state, pending.order.quantity) == (OrderState.ACCEPTED, 9)
+        assert run.fills == run.rejected_orders == ()
+        assert (run.sessions[-1].session_date, run.sessions[-1].equity) == (ANCHOR, 1000)
 
 
 def test_cagr_uses_anchor_to_last_close_instead_of_the_warmup_period():
@@ -514,22 +562,23 @@ def test_mean_reversion_without_a_trigger_keeps_the_same_anchor():
     assert fill.execution_session == bars[6].session_date
 
 
-def test_mean_reversion_anchor_only_leaves_buys_outstanding():
+def test_mean_reversion_anchor_only_reports_accepted_benchmark_entry(completed_backtests):
     bars = spy_bars([100] * 5 + [97])
 
-    result = compare_mean_reversion(bars)
+    with pytest.raises(BuyAndHoldEntryError, match="outstanding at the final close") as failure:
+        compare_mean_reversion(bars)
 
-    assert result.start_session == result.end_session == bars[5].session_date
-    for run in (result.mean_reversion, result.buy_and_hold):
-        pending, = run.backtest.outstanding_orders
+    error = failure.value
+    assert (error.anchor, error.status) == (bars[5].session_date, "outstanding")
+    reversion, holding = completed_backtests
+    assert error.entry is holding.outstanding_orders[0]
+    for run in (reversion, holding):
+        pending, = run.outstanding_orders
         assert pending.state is OrderState.ACCEPTED
-        assert pending.order.side is OrderSide.BUY
-        assert pending.order.quantity == 10
-        assert run.backtest.fills == ()
-        assert run.metrics.total_commissions == 0
-        assert run.metrics.annualized_volatility is None
-        assert run.equity_path == ((result.start_session, Decimal("1000")),)
-    assert result.outstanding_exit is None
+        assert pending.order.side is OrderSide.BUY and pending.order.quantity == 10
+        assert run.fills == run.rejected_orders == ()
+        assert run.sessions[-1].portfolio.cumulative_commissions == 0
+        assert (run.sessions[-1].session_date, run.sessions[-1].equity) == (error.anchor, 1000)
 
 
 def test_mean_reversion_ending_with_a_pending_sell_keeps_an_open_position():
@@ -553,7 +602,7 @@ def test_mean_reversion_ending_with_a_pending_sell_keeps_an_open_position():
 
 
 def test_rejected_mean_reversion_entry_stays_flat_without_a_fresh_crossing():
-    bars = spy_bars([100] * 5 + [97, 95, 94, 93, 92, 91], openings={7: 105})
+    bars = spy_bars([100] * 6 + [97, 95, 94, 93, 92, 91], openings={7: 96, 8: 105})
 
     result = compare_mean_reversion(bars)
 
@@ -561,9 +610,10 @@ def test_rejected_mean_reversion_entry_stays_flat_without_a_fresh_crossing():
     rejected, = run.backtest.rejected_orders
     assert rejected.order.side is OrderSide.BUY
     assert "insufficient cash" in rejected.rejection_reason
-    assert run.backtest.signals == (SignalEvent("SPY", result.start_session, 1),)
+    assert run.backtest.signals == (SignalEvent("SPY", bars[6].session_date, 1),)
     assert run.backtest.transactions == run.backtest.outstanding_orders == ()
     assert run.equity_path == result.cash.equity_path
+    assert result.buy_and_hold.entry.fill.execution_session == bars[6].session_date
 
 
 def test_rejected_mean_reversion_exit_propagates_without_a_comparison():
@@ -789,9 +839,13 @@ def test_common_window_flat_prices_keep_both_active_portfolios_in_cash():
     assert result.buy_and_hold.metrics.sharpe_ratio is None
 
 
-def test_future_gap_and_price_changes_cannot_change_anchor_orders():
+def test_future_gap_and_price_changes_cannot_change_anchor_orders(completed_backtests):
     bars = common_window_bars()
-    anchor_only = compare_common_window(bars[:64])
+    with pytest.raises(BuyAndHoldEntryError, match="outstanding") as failure:
+        compare_common_window(bars[:64])
+    anchor_only = tuple(completed_backtests)
+    assert failure.value.entry is anchor_only[-1].outstanding_orders[0]
+
     opening = replace(
         bars[64], session_date=FIRST_FILL + timedelta(days=3),
         open=94, low=94, high=110, close=110,
@@ -799,25 +853,23 @@ def test_future_gap_and_price_changes_cannot_change_anchor_orders():
     gapped = compare_common_window([*bars[:64], opening])
     original = compare_common_window(bars[:65])
 
-    for single, gap, base in (
-        (anchor_only.momentum, gapped.momentum, original.momentum),
-        (anchor_only.mean_reversion, gapped.mean_reversion, original.mean_reversion),
-        (anchor_only.buy_and_hold, gapped.buy_and_hold, original.buy_and_hold),
+    for single, gap, base in zip(
+        anchor_only,
+        (gapped.momentum, gapped.mean_reversion, gapped.buy_and_hold),
+        (original.momentum, original.mean_reversion, original.buy_and_hold),
+        strict=True,
     ):
-        accepted, = single.backtest.outstanding_orders
+        accepted, = single.outstanding_orders
         assert accepted.state is OrderState.ACCEPTED
-        assert single.backtest.fills == ()
-        assert single.metrics.annualized_volatility is None
-        assert single.backtest.signals == gap.backtest.signals == base.backtest.signals
+        assert single.fills == ()
+        assert single.signals == gap.backtest.signals == base.backtest.signals
         assert (accepted.order,) == gap.backtest.orders == base.backtest.orders
         assert accepted.order.quantity == 10
         fill, = gap.backtest.fills
         assert fill.execution_session == opening.session_date
         assert fill.price == Decimal("94.235")
         assert base.backtest.fills[0].price == Decimal("96.24")
-        assert tuple(day for day, _ in gap.equity_path) == (
-            ANCHOR, opening.session_date
-        )
+        assert tuple(day for day, _ in gap.equity_path) == (ANCHOR, opening.session_date)
 
 
 def test_common_window_keeps_a_final_accepted_exit_open():
@@ -852,9 +904,10 @@ def test_common_window_propagates_a_rejected_exit():
 
 
 def test_common_window_preserves_the_rejected_entry_policy():
-    bars = common_window_bars(entry_open=105)[:66]
+    bars = common_window_bars()[:66]
+    bars[63] = replace(bars[63], close=98, high=98)
     bars[64] = replace(bars[64], close=95, low=95)
-    bars[65] = replace(bars[65], close=94, low=94)
+    bars[65] = replace(bars[65], open=105, close=94, high=105, low=94)
 
     result = compare_common_window(bars)
     run = result.mean_reversion
@@ -862,10 +915,11 @@ def test_common_window_preserves_the_rejected_entry_policy():
     rejected, = run.backtest.rejected_orders
     assert rejected.order.side is OrderSide.BUY
     assert "insufficient cash" in rejected.rejection_reason
-    assert run.backtest.signals == (SignalEvent("SPY", ANCHOR, 1),)
+    assert run.backtest.signals == (SignalEvent("SPY", FIRST_FILL, 1),)
     assert run.backtest.fills == run.backtest.outstanding_orders == ()
     assert run.equity_path == result.cash.equity_path
     assert run.metrics.total_commissions == 0
+    assert result.buy_and_hold.entry.fill.execution_session == FIRST_FILL
 
 
 def test_common_window_is_reproducible_and_preserves_individual_benchmarks():
@@ -887,6 +941,29 @@ def test_common_window_is_reproducible_and_preserves_individual_benchmarks():
     assert first_fill.execution_session == bars[6].session_date
     with pytest.raises(FrozenInstanceError):
         setattr(result, "start_session", result.end_session)
+
+
+def test_common_window_fails_when_its_benchmark_entry_is_rejected():
+    bars = common_window_bars(entry_open=105)[:66]
+
+    with pytest.raises(BuyAndHoldEntryError, match="insufficient cash") as failure:
+        compare_common_window(bars)
+
+    assert failure.value.anchor == ANCHOR
+    assert failure.value.status == "rejected"
+    assert failure.value.entry.state is OrderState.REJECTED
+    assert failure.value.entry.fill is None
+
+
+def test_benchmark_with_zero_whole_shares_fails_without_an_order():
+    bars = spy_bars([1200] * 6 + [900])
+
+    with pytest.raises(BuyAndHoldEntryError, match="whole-share sizing produced zero shares") as failure:
+        compare_mean_reversion(bars, bps=0, fee=0)
+
+    error = failure.value
+    assert (error.anchor, error.status) == (bars[5].session_date, "zero_shares")
+    assert error.entry is None
 
 
 def test_common_window_requires_64_observations():

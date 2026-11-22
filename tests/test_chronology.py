@@ -5,6 +5,7 @@ from decimal import Decimal
 import pytest
 
 from trading_research import benchmark
+from trading_research.benchmark import BuyAndHoldEntryError
 from trading_research.chronology import (
     RESEARCH_PERIODS,
     ResearchPeriod,
@@ -268,12 +269,28 @@ def test_final_test_price_changes_leave_earlier_results_identical(bars):
         for bar, price in zip(bars[87:], (200, 201, 202), strict=True)
     ]
 
+    changed[88] = replace(changed[88], open=195, low=195)
     altered = evaluate(changed)
 
     assert altered[:2] == original[:2]
     assert altered[-1].comparison.mean_reversion.backtest.signals == ()
     assert original[-1].comparison.mean_reversion.backtest.fills
     assert evaluate(bars[:87], periods=RESEARCH_PERIODS[:2]) == original[:2]
+
+
+def test_period_ending_at_anchor_cannot_use_later_open_for_benchmark(bars):
+    anchor = date(2010, 1, 4)
+    period = ResearchPeriod("anchor_only", anchor, anchor)
+    assert any(bar.session_date > anchor for bar in bars)
+
+    with pytest.raises(BuyAndHoldEntryError, match="2010-01-04:SPY.*outstanding") as failure:
+        evaluate(bars, periods=(period,))
+
+    error = failure.value
+    assert (error.anchor, error.status) == (anchor, "outstanding")
+    assert error.entry.state is OrderState.ACCEPTED
+    assert error.entry.order.decision_session == anchor
+    assert error.entry.fill is error.entry.rejection_reason is None
 
 
 def test_first_eligible_close_can_follow_in_period_warmup(bars):

@@ -8,6 +8,8 @@ import pytest
 from trading_research.daily_bars import DailyBar, DatasetMetadata, PriceAdjustment
 from trading_research.mean_reversion import MeanReversionExitRejected
 from trading_research.orders import OrderSide, OrderState
+from trading_research import sensitivity
+from trading_research.benchmark import BuyAndHoldEntryError
 from trading_research.sensitivity import (
     CostScenarioFailed,
     run_transaction_cost_sensitivity,
@@ -186,39 +188,44 @@ def test_costs_change_whole_share_sizing_on_a_later_entry():
     assert reference.metrics.total_commissions == Decimal("3.75")
 
 
-def test_five_dollar_commission_can_make_the_full_buy_unaffordable():
+def test_five_dollar_commission_reports_scenario_and_invalid_benchmark(monkeypatch):
     bars = spy_bars(spy_warmup() + [97, 99], opens={65: 99.3})
-    results = run_transaction_cost_sensitivity(
-        METADATA, bars, initial_cash=INITIAL_CASH
-    )
+    completed = []
+    compare = sensitivity.compare_spy_common_window
 
-    for scenario in results[:5]:
-        comparison = scenario.comparison
+    def record(*args, **kwargs):
+        comparison = compare(*args, **kwargs)
+        completed.append(comparison)
+        return comparison
+
+    monkeypatch.setattr(sensitivity, "compare_spy_common_window", record)
+    with pytest.raises(CostScenarioFailed, match=r"scenario F .*insufficient cash") as failure:
+        run_transaction_cost_sensitivity(METADATA, bars, initial_cash=INITIAL_CASH)
+
+    error = failure.value
+    assert (error.scenario, error.adjustment_bps, error.commission) == (
+        "F", Decimal(25), Decimal("5.00"),
+    )
+    cause = error.__cause__
+    assert isinstance(cause, BuyAndHoldEntryError)
+    assert cause.anchor == bars[63].session_date
+    assert cause.status == "rejected"
+    assert cause.entry.order.quantity == 10
+    assert cause.entry.state is OrderState.REJECTED
+    assert cause.entry.fill is None
+    assert "insufficient cash" in cause.entry.rejection_reason
+
+    assert len(completed) == 5
+    for comparison in completed:
         for run in (
-            comparison.momentum, comparison.mean_reversion, comparison.buy_and_hold
+            comparison.momentum, comparison.mean_reversion, comparison.buy_and_hold,
         ):
             fill, = run.backtest.fills
             assert fill.quantity == 10
             assert run.backtest.rejected_orders == ()
-    e_purchase, = results[-2].comparison.momentum.backtest.transactions
+    e_purchase, = completed[-1].momentum.backtest.transactions
     assert e_purchase.fill.price == Decimal("99.7965")
     assert e_purchase.cash_after == Decimal("0.785")
-    comparison = results[-1].comparison
-    for run, difference in zip(
-        (comparison.momentum, comparison.mean_reversion, comparison.buy_and_hold),
-        results[-1].differences_vs_zero_cost[:3], strict=True,
-    ):
-        rejected, = run.backtest.rejected_orders
-        assert rejected.order.quantity == 10
-        assert rejected.state is OrderState.REJECTED
-        assert "insufficient cash" in rejected.rejection_reason
-        assert run.backtest.fills == run.backtest.outstanding_orders == ()
-        assert run.metrics.total_commissions == 0
-        assert run.equity_path == comparison.cash.equity_path
-        assert difference.executed_order_change == -1
-        assert difference.filled_share_change == -10
-        assert difference.equity_difference_usd == 3
-        assert difference.return_difference_pp == Decimal("0.3")
 
 
 def test_pending_exit_stays_outstanding_under_all_cost_scenarios(round_trip_bars):

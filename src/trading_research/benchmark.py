@@ -13,7 +13,7 @@ from .mean_reversion import _LOOKBACK_INTERVALS as _MEAN_REVERSION_LOOKBACK
 from .mean_reversion import short_term_mean_reversion
 from .momentum import _LOOKBACK_INTERVALS as _MOMENTUM_LOOKBACK
 from .momentum import time_series_momentum
-from .orders import OrderSide, OrderSnapshot
+from .orders import OrderSide, OrderSnapshot, OrderState
 from .performance import (
     _STATISTICS_CONTEXT,
     PerformanceResult,
@@ -22,13 +22,37 @@ from .performance import (
 from .signals import SessionContext, SignalEvent
 
 
+class BuyAndHoldEntryError(RuntimeError):
+    """The evaluation window could not establish an invested benchmark."""
+
+    def __init__(self, symbol: str, anchor: date, entry: OrderSnapshot | None) -> None:
+        self.symbol = symbol
+        self.anchor = anchor
+        self.entry = entry
+        if entry is None:
+            self.status = "zero_shares"
+            detail = "whole-share sizing produced zero shares"
+        elif entry.state is OrderState.ACCEPTED:
+            self.status = "outstanding"
+            detail = f"order {entry.order.order_id!r} is outstanding at the final close"
+        else:
+            self.status = entry.state.value
+            detail = f"order {entry.order.order_id!r} is {self.status}"
+            if entry.rejection_reason:
+                detail += f" ({entry.rejection_reason})"
+        super().__init__(f"{symbol} buy-and-hold entry at anchor {anchor}: {detail}")
+
+
 @dataclass(frozen=True, slots=True)
 class BenchmarkRun:
+    """A scored portfolio with its entry record for buy-and-hold."""
+
     label: str
     backtest: BacktestResult
     metrics: PerformanceResult
     return_difference_pp_vs_buy_and_hold: Decimal
     equity_difference_usd_vs_buy_and_hold: Decimal
+    entry: OrderSnapshot | None = None
 
     @property
     def equity_path(self) -> tuple[tuple[date, Decimal], ...]:
@@ -259,20 +283,25 @@ def _compare_spy_runs(
     holding = _comparison_window(
         run(buy_and_hold), dates, anchor_index, initial_cash
     )
+    entry = holding.order_history[-1] if holding.order_history else None
+    if entry is None or entry.state is not OrderState.FILLED:
+        raise BuyAndHoldEntryError(metadata.symbol, start, entry)
     baseline_equity = holding.sessions[-1].equity
 
-    def measure(label: str, result: BacktestResult) -> BenchmarkRun:
+    def measure(
+        label: str, result: BacktestResult, *, entry: OrderSnapshot | None = None,
+    ) -> BenchmarkRun:
         metrics = evaluate_performance(result, start_date=start, end_date=end)
         difference_pp, difference_usd = _equity_difference(
             result.sessions[-1].equity, baseline_equity, initial_cash
         )
         return BenchmarkRun(
-            label, result, metrics, difference_pp, difference_usd
+            label, result, metrics, difference_pp, difference_usd, entry=entry,
         )
 
     return (
         tuple(measure(label, result) for label, result in strategy_windows),
-        measure("SPY buy-and-hold", holding),
+        measure("SPY buy-and-hold", holding, entry=entry),
         measure(
             "Cash (zero interest)",
             _comparison_window(
