@@ -1,14 +1,18 @@
 """Commit proposed fills to a consistent pair of in-memory ledgers."""
 
 from collections.abc import Iterable
+from datetime import date
 
+from .corporate_actions import CashDividend, StockSplit
 from .execution import ProposedExecution, _validate_proposal_price
 from .orders import MarketOrder, OrderLedger, OrderSnapshot, OrderState
 from .portfolio import (
+    DividendPayment,
     PortfolioLedger,
     PortfolioRejection,
     PortfolioSnapshot,
     PortfolioTransaction,
+    SplitAdjustment,
 )
 
 
@@ -65,6 +69,36 @@ class ExecutionCoordinator:
         # Both transitions are staged before publishing the new pair.
         self._ledgers = (next_orders, next_portfolio)
         return outcome
+
+    def _apply_corporate_actions(
+        self,
+        session: date,
+        *,
+        splits: Iterable[StockSplit] = (),
+        entitlements: Iterable[tuple[CashDividend, date]] = (),
+    ) -> None:
+        """Publish this date's split, entitlement, and payment bookings together."""
+        orders, portfolio = self._ledgers
+        staged = portfolio._copy()
+        for split in splits:
+            staged.apply_split(split)
+        for dividend, preceding_session in entitlements:
+            staged.accrue_dividend(
+                dividend, session=session, preceding_session=preceding_session
+            )
+        for receivable in staged.snapshot().unpaid_receivables:
+            if receivable.dividend.payment_date == session:
+                staged.pay_dividend(receivable.dividend.action_id, session=session)
+        self._ledgers = (orders, staged)
+
+    def _record_close(self, session: date) -> None:
+        self._ledgers[1].record_close(session)
+
+    def split_history(self) -> tuple[SplitAdjustment, ...]:
+        return self._ledgers[1].split_history()
+
+    def dividend_payments(self) -> tuple[DividendPayment, ...]:
+        return self._ledgers[1].dividend_payments()
 
     def order_snapshot(self, order_id: str) -> OrderSnapshot:
         return self._ledgers[0].snapshot(order_id)

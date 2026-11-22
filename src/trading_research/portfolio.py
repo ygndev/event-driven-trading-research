@@ -73,7 +73,7 @@ class PortfolioLedger:
         # Order IDs are unique because the order ledger permits one full fill.
         self._transactions: dict[str, PortfolioTransaction] = {}
         self._splits: dict[tuple[str, date], SplitAdjustment] = {}
-        self._prior_close: tuple[date, Mapping[str, int]] | None = None
+        self._closing_positions: dict[date, Mapping[str, int]] = {}
         self._dividends: dict[str, DividendReceivable | None] = {}
         self._payments: dict[str, DividendPayment] = {}
 
@@ -84,10 +84,13 @@ class PortfolioLedger:
         ledger._commissions = self._commissions
         ledger._transactions = self._transactions.copy()
         ledger._splits = self._splits.copy()
-        ledger._prior_close = self._prior_close
+        ledger._closing_positions = self._closing_positions.copy()
         ledger._dividends = self._dividends.copy()
         ledger._payments = self._payments.copy()
         return ledger
+
+    def _last_close(self) -> date:
+        return next(reversed(self._closing_positions), date.min)
 
     def apply_fill(self, fill: Fill, commission: Money = 0) -> None:
         """Book a fill and its supplied commission in this ledger."""
@@ -100,7 +103,7 @@ class PortfolioLedger:
             )
 
         session = fill.execution_session
-        if self._prior_close is not None and session <= self._prior_close[0]:
+        if self._closing_positions and session <= self._last_close():
             raise ValueError("cannot book a fill on or before the recorded close")
         if self._splits and any(
             symbol == fill.symbol and effective > session
@@ -157,7 +160,7 @@ class PortfolioLedger:
         key = (symbol, session)
         if key in self._splits:
             raise ValueError(f"{symbol} {session}: split already applied")
-        if self._prior_close is not None and session <= self._prior_close[0]:
+        if self._closing_positions and session <= self._last_close():
             raise ValueError("cannot apply a split on or before the recorded close")
         if any(
             trade.fill.symbol == symbol and trade.fill.execution_session >= session
@@ -184,9 +187,9 @@ class PortfolioLedger:
         return adjustment
 
     def record_close(self, session: date) -> None:
-        """Freeze the latest observed close for the next session's entitlement."""
+        """Freeze the holdings at a caller-supplied observed close."""
         _validate_session(session, "session")
-        if self._prior_close is not None and session <= self._prior_close[0]:
+        if self._closing_positions and session <= self._last_close():
             raise ValueError("recorded closes must be strictly increasing")
         if (
             any(
@@ -196,7 +199,7 @@ class PortfolioLedger:
             or any(day > session for _, day in self._splits)
         ):
             raise ValueError("cannot record a close before an applied position change")
-        self._prior_close = (session, MappingProxyType(self._positions.copy()))
+        self._closing_positions[session] = MappingProxyType(self._positions.copy())
 
     def accrue_dividend(
         self, dividend: CashDividend, *, session: date, preceding_session: date,
@@ -217,12 +220,15 @@ class PortfolioLedger:
             )
         if preceding_session >= session:
             raise ValueError("preceding_session must be before ex_date")
-        if self._prior_close is None or self._prior_close[0] != preceding_session:
+        if self._closing_positions and session <= self._last_close():
+            raise ValueError("cannot accrue a dividend on or before the recorded close")
+        positions = self._closing_positions.get(preceding_session)
+        if positions is None:
             raise ValueError(
                 f"missing recorded holdings for preceding session {preceding_session}"
             )
 
-        shares = self._prior_close[1].get(dividend.symbol, 0)
+        shares = positions.get(dividend.symbol, 0)
         receivable = None
         if shares:
             with localcontext(USD_CONTEXT):
@@ -245,7 +251,7 @@ class PortfolioLedger:
             raise ValueError(
                 f"dividend {action_id!r}: payment must occur on payment_date"
             )
-        if self._prior_close is not None and session <= self._prior_close[0]:
+        if self._closing_positions and session <= self._last_close():
             raise ValueError("cannot pay a dividend on or before the recorded close")
 
         with localcontext(USD_CONTEXT):

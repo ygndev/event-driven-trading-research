@@ -140,7 +140,12 @@ def evaluate_performance(
             )
             if cash > equity:
                 raise ValueError(f"cash exceeds equity on {current_date}")
-            if bool(session.portfolio.positions) != (cash < equity):
+            receivables = sum(
+                (claim.total_amount for claim in session.portfolio.unpaid_receivables),
+                Decimal(0),
+            )
+            long_value = equity - cash - receivables
+            if long_value < 0 or bool(session.portfolio.positions) != (long_value > 0):
                 raise ValueError(
                     f"equity and cash disagree with positions on {current_date}"
                 )
@@ -149,7 +154,7 @@ def evaluate_performance(
                 SessionReturn(
                     current_date,
                     (equity - previous) / previous,
-                    (equity - cash) / equity,
+                    long_value / equity,
                 )
             )
             peak = max(peak, equity)
