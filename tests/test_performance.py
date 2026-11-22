@@ -19,6 +19,7 @@ from trading_research.performance import evaluate_performance
 from trading_research.portfolio import PortfolioLedger, PortfolioSnapshot
 from trading_research.signals import SignalEvent
 
+CAPITAL_START = date(2025, 1, 2)
 FIRST = date(2025, 1, 3)
 SECOND = date(2025, 1, 6)
 THIRD = date(2025, 1, 8)
@@ -62,17 +63,23 @@ def near(expected):
     return pytest.approx(Decimal(expected), rel=Decimal("1e-12"))
 
 
-def test_no_trade_backtest_preserves_gaps_and_reports_zero_volatility():
-    spy = dataset("SPY", (FIRST, 10, 12), (SECOND, 11, 10), (THIRD, 8, 9))
+@pytest.mark.parametrize("valuation_count", [1, 2, 3])
+def test_cash_volatility_requires_two_elapsed_intervals(valuation_count):
+    bars = [(FIRST, 10, 12), (SECOND, 11, 10), (THIRD, 8, 9)][:valuation_count]
+    spy = dataset("SPY", *bars)
     report = evaluate_performance(run([spy], lambda context: ()))
 
     assert [entry.session_date for entry in report.session_returns] == [
-        FIRST, SECOND, THIRD
+        day for day, _, _ in bars[1:]
     ]
     returns = [entry.simple_return for entry in report.session_returns]
-    assert returns == [0, 0, 0]
+    assert returns == [0] * (valuation_count - 1)
     assert report.total_return == report.max_drawdown == report.turnover == 0
-    assert report.average_long_exposure == report.annualized_volatility == 0
+    assert report.average_long_exposure == 0
+    if valuation_count < 3:
+        assert report.annualized_volatility is None
+    else:
+        assert report.annualized_volatility == 0
     assert report.total_commissions == report.executed_notional == 0
     assert report.executed_orders == 0
     assert report.sharpe_ratio is None
@@ -121,11 +128,12 @@ def test_sample_volatility_and_sharpe_against_known_returns():
     # Returns +15%, +5%, -5% have mean 5% and sample deviation 10%.
     result = equity_path(["115", "120.75", "114.7125"])
 
-    report = evaluate_performance(result)
-    excess = evaluate_performance(result, risk_free_rate_per_session=0.02)
+    dates = {"start_date": CAPITAL_START, "end_date": THIRD}
+    report = evaluate_performance(result, **dates)
+    excess = evaluate_performance(result, risk_free_rate_per_session=0.02, **dates)
     with localcontext() as ambient:
         ambient.prec = 2
-        assert evaluate_performance(result) == report
+        assert evaluate_performance(result, **dates) == report
 
     assert [item.simple_return for item in report.session_returns] == [
         Decimal("0.15"), Decimal("0.05"), Decimal("-0.05")
@@ -142,9 +150,21 @@ def test_sample_volatility_and_sharpe_against_known_returns():
 def test_equal_nonzero_returns_have_zero_volatility_and_undefined_sharpe():
     report = evaluate_performance(equity_path(["110", "121", "133.1"]))
 
+    assert [row.simple_return for row in report.session_returns] == [Decimal("0.10")] * 2
     assert report.total_return == Decimal("0.331")
     assert report.annualized_volatility == 0
     assert report.sharpe_ratio is None
+
+
+def test_two_negative_elapsed_returns_keep_negative_sharpe():
+    report = evaluate_performance(equity_path([100, 90, 72]))
+    assert [row.simple_return for row in report.session_returns] == [
+        Decimal("-0.10"), Decimal("-0.20"),
+    ]
+    # Mean -0.15 and sample variance 0.005 give these annualized values.
+    assert report.annualized_volatility == near("1.1224972160321824")
+    assert report.sharpe_ratio == near("-33.67491648096547")
+    assert report.total_return == Decimal("-0.28")
 
 
 def test_drawdown_restarts_from_new_peaks():
@@ -155,30 +175,44 @@ def test_drawdown_restarts_from_new_peaks():
 
     assert report.max_drawdown == Decimal("0.30")
     assert report.total_return == Decimal("0.30")
-    assert report.session_returns[1].simple_return == Decimal("-0.25")
-    assert report.session_returns[3].simple_return == Decimal("-0.30")
+    returns_by_date = {row.session_date: row.simple_return for row in report.session_returns}
+    assert tuple(returns_by_date) == dates[1:]
+    assert returns_by_date[SECOND] == Decimal("-0.25")
+    assert returns_by_date[dates[3]] == Decimal("-0.30")
 
 
 def test_first_snapshot_drawdown_uses_initial_capital_as_the_peak():
     report = evaluate_performance(equity_path([70, 90, 80]))
 
-    assert report.session_returns[0].simple_return == Decimal("-0.30")
+    assert [row.session_date for row in report.session_returns] == [SECOND, THIRD]
+    assert report.session_returns[0].simple_return == near("0.2857142857142857")
     assert report.max_drawdown == Decimal("0.30")
     assert report.total_return == Decimal("-0.20")
 
 
-def test_one_observation_has_return_and_drawdown_but_no_sample_statistics():
+def test_same_day_anchor_has_total_return_and_drawdown_but_no_elapsed_return():
     result = equity_path([95], (FIRST,))
 
     report = evaluate_performance(result, start_date=FIRST, end_date=FIRST)
 
-    assert report.session_returns[0].simple_return == Decimal("-0.05")
+    assert report.session_returns == ()
     assert report.total_return == Decimal("-0.05")
     assert report.max_drawdown == Decimal("0.05")
     assert report.annualized_return is None
     assert report.annualized_return_reason == (
         "CAGR requires at least 365 days and two observations"
     )
+    assert report.annualized_volatility is report.sharpe_ratio is None
+
+
+def test_earlier_dated_initial_cash_can_start_one_elapsed_interval():
+    result = equity_path([110], (FIRST,))
+
+    report = evaluate_performance(result, start_date=CAPITAL_START, end_date=FIRST)
+
+    interval, = report.session_returns
+    assert (interval.session_date, interval.simple_return) == (FIRST, Decimal("0.10"))
+    assert report.total_return == Decimal("0.10")
     assert report.annualized_volatility is report.sharpe_ratio is None
 
 
@@ -269,7 +303,7 @@ def test_multiple_instruments_can_be_fully_invested_at_the_close():
     assert result.sessions[-1].portfolio.cash == 0
     assert result.sessions[-1].equity == Decimal("108")
     exposures = [item.long_exposure for item in report.session_returns]
-    assert exposures == [0, 1]
+    assert exposures == [1]
     assert report.average_long_exposure == Decimal("0.5")
     assert report.total_return == Decimal("0.08")
     assert report.executed_notional == Decimal("100")
@@ -334,10 +368,11 @@ def test_evaluation_is_immutable_and_leaves_source_ledger_unchanged():
     session = SessionValuation(FIRST, snapshot, Decimal("103.965"))
     source = BacktestResult((session,), (), (), history)
 
-    report = evaluate_performance(source)
+    dates = {"start_date": CAPITAL_START, "end_date": FIRST}
+    report = evaluate_performance(source, **dates)
     with localcontext() as ambient:
         ambient.prec = 2
-        assert evaluate_performance(source) == report
+        assert evaluate_performance(source, **dates) == report
 
     assert report.total_commissions == Decimal("0.015")
     assert report.executed_notional == Decimal("20.02")

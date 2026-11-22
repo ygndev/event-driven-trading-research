@@ -96,11 +96,10 @@ def test_three_way_reversal_uses_equal_capital_costs_and_aligned_window():
         assert first.initial_cash == first.cash == Decimal("1000")
         assert first.positions == {}
         assert first.cumulative_commissions == 0
-        assert run.metrics.session_returns[0].simple_return == 0
         period_dates = tuple(
             row.session_date for row in run.metrics.session_returns
         )
-        assert period_dates == expected_dates
+        assert period_dates == expected_dates[1:]
         assert run.metrics.annualized_return is None
         assert "at least 365 days" in run.metrics.annualized_return_reason
         assert all(
@@ -131,7 +130,7 @@ def test_three_way_reversal_uses_equal_capital_costs_and_aligned_window():
     for scored in (momentum, holding):
         assert scored.backtest.sessions[1].portfolio.cash == Decimal("24.32")
         assert scored.equity_path[1] == (FIRST_FILL, Decimal("1032.32"))
-        assert scored.metrics.session_returns[1].simple_return == Decimal(
+        assert scored.metrics.session_returns[0].simple_return == Decimal(
             "0.03232"
         )
     assert all(
@@ -261,6 +260,45 @@ def test_unaffordable_first_open_is_rejected_without_retry_or_commission(complet
         assert "insufficient cash" in rejected.rejection_reason
         assert all(session.equity == 1000 for session in run.sessions)
         assert run.sessions[-1].portfolio.cumulative_commissions == 0
+
+
+def test_audited_one_interval_has_no_annualized_volatility_or_sharpe():
+    days = tuple(date(2024, 1, day) for day in (2, 3, 4, 5, 8, 9, 10))
+    bars = spy_bars([100] * 6 + [110], openings={7: 100}, dates=days)
+
+    comparison = compare_mean_reversion(bars, bps=0, fee=0)
+
+    holding = comparison.buy_and_hold
+    assert holding.equity_path == ((days[5], Decimal(1000)), (days[6], Decimal(1100)))
+    assert holding.metrics.total_return == Decimal("0.10")
+    observed = (
+        [row.simple_return for row in holding.metrics.session_returns],
+        holding.metrics.annualized_volatility,
+        holding.metrics.sharpe_ratio,
+    )
+    assert observed == ([Decimal("0.10")], None, None), observed
+
+
+def test_two_distinct_elapsed_returns_use_sample_volatility():
+    bars = spy_bars([100] * 6 + [110, 99], openings={7: 100})
+
+    comparison = compare_mean_reversion(bars, bps=0, fee=0)
+
+    holding = comparison.buy_and_hold
+    assert [equity for _, equity in holding.equity_path] == [1000, 1100, 990]
+    assert [
+        (row.session_date, row.simple_return) for row in holding.metrics.session_returns
+    ] == [
+        (bars[6].session_date, Decimal("0.10")),
+        (bars[7].session_date, Decimal("-0.10")),
+    ]
+    # Mean zero and sample variance (0.10**2 + 0.10**2) / (2 - 1) = 0.02.
+    assert holding.metrics.annualized_volatility == pytest.approx(
+        Decimal("2.244994432064365"), rel=Decimal("1e-12")
+    )
+    assert holding.metrics.sharpe_ratio == 0
+    assert holding.metrics.total_return == Decimal("-0.01")
+    assert holding.metrics.max_drawdown == Decimal("0.10")
 
 
 def test_audited_rejected_entry_cannot_return_a_buy_and_hold_comparison(monkeypatch):
@@ -449,8 +487,7 @@ def test_mean_reversion_three_way_comparison_at_exact_threshold():
         scored_dates = tuple(
             row.session_date for row in run.metrics.session_returns
         )
-        assert scored_dates == dates[5:]
-        assert run.metrics.session_returns[0].simple_return == 0
+        assert scored_dates == dates[6:]
         assert run.metrics.annualized_return is None
         assert "at least 365 days" in run.metrics.annualized_return_reason
 
@@ -690,8 +727,7 @@ def test_common_window_four_portfolio_accounting_and_pairwise_differences():
         assert baseline.initial_cash == baseline.cash == 1000
         assert baseline.positions == {}
         assert baseline.cumulative_commissions == 0
-        assert tuple(row.session_date for row in run.metrics.session_returns) == dates
-        assert run.metrics.session_returns[0].simple_return == 0
+        assert tuple(row.session_date for row in run.metrics.session_returns) == dates[1:]
         assert run.metrics.annualized_return is None
         assert "at least 365 days" in run.metrics.annualized_return_reason
         assert all(

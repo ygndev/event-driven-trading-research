@@ -107,7 +107,7 @@ def test_fixed_period_config_and_scored_dates(bars):
             assert tuple(day for day, _ in run.equity_path) == dates
             assert tuple(
                 item.session_date for item in run.metrics.session_returns
-            ) == dates
+            ) == dates[1:]
             assert run.equity_path[0] == (dates[0], Decimal(1000))
             baseline = run.backtest.sessions[0].portfolio
             assert baseline.initial_cash == baseline.cash == 1000
@@ -299,9 +299,14 @@ def test_first_eligible_close_can_follow_in_period_warmup(bars):
 
     assert result.warmup_observation_count == 63
     assert result.comparison.start_session == date(2010, 1, 4)
-    assert result.comparison.cash.equity_path == (
+    comparison = result.comparison
+    assert comparison.cash.equity_path == (
         (date(2010, 1, 4), Decimal(1000)), (date(2010, 1, 5), Decimal(1000))
     )
+    for run in (comparison.momentum, comparison.mean_reversion, comparison.buy_and_hold, comparison.cash):
+        interval, = run.metrics.session_returns
+        assert interval.session_date == date(2010, 1, 5)
+        assert run.metrics.annualized_volatility is run.metrics.sharpe_ratio is None
 
 
 def test_insufficient_warmup_cannot_borrow_sessions_from_after_the_window(bars):

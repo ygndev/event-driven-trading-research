@@ -24,7 +24,7 @@ _STATISTICS_CONTEXT = Context(
 
 @dataclass(frozen=True, slots=True)
 class SessionReturn:
-    """Simple return and closing long exposure for one observed session."""
+    """Simple return over an elapsed interval and long exposure at its end."""
 
     session_date: date
     simple_return: Decimal
@@ -84,7 +84,7 @@ def evaluate_performance(
     end_date: date | None = None,
     risk_free_rate_per_session: Money = 0,
 ) -> PerformanceResult:
-    """Use initial cash as the baseline for the first observed return."""
+    """Measure returns between dated valuations and retain initial cash as the equity baseline."""
     sessions = result.sessions
     if not sessions:
         raise ValueError("performance requires at least one session valuation")
@@ -103,6 +103,7 @@ def evaluate_performance(
     max_drawdown = Decimal(0)
     last_date: date | None = None
     equities: list[Decimal] = []
+    exposures: list[Decimal] = []
     observations: list[SessionReturn] = []
 
     with localcontext(USD_CONTEXT):
@@ -150,13 +151,12 @@ def evaluate_performance(
                     f"equity and cash disagree with positions on {current_date}"
                 )
 
-            observations.append(
-                SessionReturn(
-                    current_date,
-                    (equity - previous) / previous,
-                    long_value / equity,
+            exposure = long_value / equity
+            exposures.append(exposure)
+            if last_date is not None:
+                observations.append(
+                    SessionReturn(current_date, (equity - previous) / previous, exposure)
                 )
-            )
             peak = max(peak, equity)
             max_drawdown = max(max_drawdown, (peak - equity) / peak)
             equities.append(equity)
@@ -167,6 +167,14 @@ def evaluate_performance(
         annualized_return, annualized_reason = _calendar_cagr(
             initial, previous, sessions, start_date, end_date
         )
+        # An explicit earlier start makes initial cash a dated baseline.
+        if start_date is not None and start_date < sessions[0].session_date:
+            observations.insert(
+                0, SessionReturn(
+                    sessions[0].session_date, (equities[0] - initial) / initial, exposures[0]
+                ),
+            )
+
         annualized_volatility = sharpe = None
         if len(observations) >= 2:
             returns = [item.simple_return for item in observations]
@@ -180,7 +188,7 @@ def evaluate_performance(
                 )
 
         turnover = executed_notional / mean(equities)
-        average_exposure = mean(item.long_exposure for item in observations)
+        average_exposure = mean(exposures)
 
     return PerformanceResult(
         session_returns=tuple(observations),
