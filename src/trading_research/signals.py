@@ -3,8 +3,12 @@
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime
+from decimal import Decimal
+from fractions import Fraction
 
-from .daily_bars import DailyBar, DatasetMetadata
+from ._money import decimal_amount
+from .corporate_actions import StockSplit
+from .daily_bars import DailyBar, DatasetMetadata, PriceAdjustment
 from .orders import MarketOrder, OrderSnapshot
 from .portfolio import PortfolioSnapshot
 from .replay import MarketEvent, replay_daily_bars
@@ -27,6 +31,9 @@ class SessionContext:
     events: tuple[MarketEvent, ...]
     _previous: "SessionContext | None" = field(default=None, repr=False)
     execution: ExecutionFeedback | None = field(default=None, kw_only=True)
+    _effective_splits: tuple[StockSplit, ...] = field(
+        default=(), repr=False, kw_only=True
+    )
 
     def history(self, symbol: str) -> tuple[MarketEvent, ...]:
         """Return a symbol's events through this session, oldest first."""
@@ -38,6 +45,38 @@ class SessionContext:
             )
             context = context._previous
         return tuple(reversed(events))
+
+    def strategy_close(
+        self, observation: MarketEvent, *, as_of: date | None = None
+    ) -> Decimal | Fraction:
+        """Express a completed RAW close on an observed share basis.
+
+        The default basis is this decision close. A historical basis supports
+        comparisons for earlier decisions without using subsequent splits.
+        """
+        bar = observation.bar
+        basis = self.session_date if as_of is None else as_of
+        if (
+            not isinstance(basis, date)
+            or isinstance(basis, datetime)
+            or not bar.session_date <= basis <= self.session_date
+        ):
+            raise ValueError(
+                "strategy close requires observation date <= as_of <= decision date"
+            )
+        if observation.adjustment is not PriceAdjustment.RAW:
+            raise ValueError("strategy close requires RAW observations")
+        close = decimal_amount(bar.close, f"{bar.symbol} close")
+        ratio = Fraction(1)
+        context: SessionContext | None = self
+        while context is not None and context.session_date > bar.session_date:
+            if context.session_date <= basis:
+                for split in context._effective_splits:
+                    if split.symbol == bar.symbol:
+                        ratio *= Fraction(split.ratio)
+            context = context._previous
+        # An exact rational preserves price comparisons for splits such as 3-for-1.
+        return close if ratio == 1 else Fraction(close) / ratio
 
     def last_order_outcome(self, symbol: str) -> OrderSnapshot | None:
         """Return the latest fill or rejection known at this session's close."""

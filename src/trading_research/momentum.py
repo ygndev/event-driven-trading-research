@@ -1,6 +1,5 @@
 """Fixed long-only SPY time-series momentum research rule."""
 
-from ._money import decimal_amount
 from .daily_bars import PriceAdjustment
 from .signals import SessionContext, SignalEvent
 
@@ -33,8 +32,8 @@ def time_series_momentum(context: SessionContext) -> tuple[SignalEvent, ...]:
     ):
         raise ValueError("SPY momentum requires RAW closes")
 
-    current_close = decimal_amount(current.bar.close, "current SPY close")
-    reference_close = decimal_amount(reference.bar.close, "lookback SPY close")
+    current_close = context.strategy_close(current)
+    reference_close = context.strategy_close(reference)
     # For a positive reference, current / reference - 1 has this exact sign.
     target = 1 if current_close > reference_close else 0
     return (SignalEvent(_SYMBOL, context.session_date, target),)

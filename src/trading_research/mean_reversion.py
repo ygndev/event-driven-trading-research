@@ -1,8 +1,9 @@
 """Fixed long-only SPY mean reversion with a fill-based holding period."""
 
 from decimal import Decimal, localcontext
+from fractions import Fraction
 
-from ._money import USD_CONTEXT, decimal_amount
+from ._money import USD_CONTEXT
 from .daily_bars import PriceAdjustment
 from .orders import OrderSide, OrderSnapshot, OrderState
 from .replay import MarketEvent
@@ -28,16 +29,21 @@ class MeanReversionExitRejected(RuntimeError):
         )
 
 
-def _entry_triggered(current: MarketEvent, reference: MarketEvent) -> bool:
+def _entry_triggered(
+    context: SessionContext, current: MarketEvent, reference: MarketEvent
+) -> bool:
     if (
         current.adjustment is not PriceAdjustment.RAW
         or reference.adjustment is not PriceAdjustment.RAW
     ):
         raise ValueError("SPY mean reversion requires RAW closes")
 
-    current_close = decimal_amount(current.bar.close, "current SPY close")
-    reference_close = decimal_amount(reference.bar.close, "lookback SPY close")
+    basis = current.bar.session_date
+    current_close = context.strategy_close(current, as_of=basis)
+    reference_close = context.strategy_close(reference, as_of=basis)
     # With a positive denominator this is equivalent to a return <= -3%.
+    if isinstance(reference_close, Fraction):
+        return current_close <= reference_close * Fraction(_ENTRY_PRICE_RATIO)
     with localcontext(USD_CONTEXT):
         return current_close <= reference_close * _ENTRY_PRICE_RATIO
 
@@ -88,7 +94,7 @@ def short_term_mean_reversion(
 
     if len(history) <= _LOOKBACK_INTERVALS:
         return ()
-    if not _entry_triggered(history[-1], history[-1 - _LOOKBACK_INTERVALS]):
+    if not _entry_triggered(context, history[-1], history[-1 - _LOOKBACK_INTERVALS]):
         return ()
 
     if (
@@ -101,7 +107,7 @@ def short_term_mean_reversion(
             or len(history) <= _LOOKBACK_INTERVALS + 1
         ):
             return ()
-        if _entry_triggered(history[-2], history[-2 - _LOOKBACK_INTERVALS]):
+        if _entry_triggered(context, history[-2], history[-2 - _LOOKBACK_INTERVALS]):
             return ()
 
     return (SignalEvent(_SYMBOL, session, 1),)

@@ -118,7 +118,7 @@ Entitlement uses the affected symbol's preceding observed close, including when 
 
 The closing mark includes available cash, current as-traded holdings, and unpaid receivables. Planning sizes with cash and holdings, excluding unpaid receivables. Payment moves the asset to cash exactly once. The result exposes `split_adjustments` and `dividend_payments` separately from fills. Performance long exposure measures marked holdings as a share of total equity, excluding receivables from the holdings numerator.
 
-RAW metadata declares the data's provenance. A real ETF study still needs verified as-traded bars, corporate-action terms and dates, coverage checks against the exchange calendar, and documented historical availability. Strategies still use the supplied raw close history, so a split within a lookback can affect a raw-price signal. This runner books supplied events at the stated boundaries and infers no declaration or publication times. Its supported actions and settlement restrictions are described above.
+RAW metadata declares the data's provenance. A real ETF study still needs verified as-traded bars, corporate-action terms and dates, coverage checks against the exchange calendar, and documented historical availability. The supplied raw closes remain available to strategies through the session context. This runner books supplied events at the stated boundaries and infers no declaration or publication times. Its supported actions and settlement restrictions are described above.
 
 ## Performance evaluation
 
@@ -132,11 +132,21 @@ Drawdown is the largest peak-to-trough decline, expressed as a nonnegative fract
 
 USD totals use the existing exact Decimal accounting policy. Ratios and statistical calculations use a separate local 34-digit Decimal context that permits rounding for division, roots, and powers. The evaluator rejects empty snapshots, nonpositive equity, inconsistent cash and holdings, or unordered session dates.
 
+## Split-aware strategy price history
+
+`SessionContext.history(symbol)` still returns the completed raw observations. Use `context.strategy_close(observation)` to express a raw close on the current decision session's share basis. The method also accepts `as_of=` for an earlier comparison date bounded by the observation and the decision. Raw bars continue to supply opening fills, order sizing, closing marks, and accounting.
+
+For an observed close at session `S` compared as of `T`, divide its raw close by the product of the same symbol's **new shares / old shares** split ratios for effective dates `S < date <= T`. The bar on a split's effective date already uses the new basis. A $200 pre-split close becomes comparable at $100 after a 2-for-1 split, and a current $100 close stays $100. Comparing the raw quotes would imply a 50% loss and can generate a false mean-reversion entry or momentum exit. The reverse-split rule follows the same formula, and missing observations remain gaps.
+
+Each decision context receives only that session's successfully applied splits and links to previous completed contexts. Retaining an earlier context freezes its view. `strategy_close` uses the existing Decimal input convention and returns a Decimal when the cumulative ratio is one. An adjusted value uses an exact `Fraction`, including values such as $100/3 that have no finite Decimal representation. The strategies compare those fractions exactly. Ordinary Decimal accounting and unadjusted Decimal threshold comparisons retain the 34-digit exact-arithmetic policy.
+
+This is split-adjusted price history. Cash dividends can still affect signals through the ex-date price move. The view requires RAW-declared observations and rejects provider-adjusted inputs. An effective session identifies when the share basis changes. Historical announcement availability and raw price provenance still need independent evidence for empirical research.
+
 ## SPY time-series momentum
 
 Pass `time_series_momentum` from `trading_research.momentum` as the strategy callable. The research hypothesis is that positive trailing price returns may indicate persistent trends. The 63-interval lookback and 21-observation rebalance cadence are fixed initial research assumptions.
 
-Momentum is `current_close / close_63_observations_ago − 1`. The rule compares the two positive finite RAW closes directly to determine the sign without dividing. It needs 64 observed SPY closes for its first decision, then evaluates at observations 85, 106, and every 21 thereafter. Missing SPY observations do not advance the count. Warm-up and between-decision sessions emit no signal. A scheduled decision emits 100% SPY for positive momentum or an explicit 0% for zero or negative momentum. Sizing runs after the decision close, and execution is eligible at the next observed SPY open.
+Momentum is `current_close / close_63_observations_ago − 1`. The rule compares the two positive finite closes on the same share basis to determine the sign without dividing. It needs 64 observed SPY closes for its first decision, then evaluates at observations 85, 106, and every 21 thereafter. Missing SPY observations do not advance the count. Warm-up and between-decision sessions emit no signal. A scheduled decision emits 100% SPY for positive momentum or an explicit 0% for zero or negative momentum. Sizing runs after the decision close, and execution is eligible at the next observed SPY open.
 
 In the synthetic round trip, the 64th close was $110 versus a $90 lookback close, so a $1,000 portfolio targeted nine shares. The next open was $108, and a 25 bp adjustment gave a $108.27 BUY fill. The 85th close was $100 versus $120 at the lookback, so the strategy targeted liquidation. The next open of $105 gave a $104.7375 SELL fill. With $1.25 commission per fill, the run ended with $965.7075 cash and equity and zero shares.
 
@@ -156,7 +166,7 @@ This comparison uses price-only SPY bars. Historical ETF total returns require d
 
 ## SPY short-term mean reversion
 
-Pass `short_term_mean_reversion` from `trading_research.mean_reversion` to `run_backtest`. The research hypothesis is that a large short-term decline may be followed by a partial reversal. The entry rule uses six observed SPY closes and targets 100% SPY when `current_close / close_5_observations_ago − 1 <= -0.03`. It tests the equivalent exact Decimal price inequality using positive finite RAW closes.
+Pass `short_term_mean_reversion` from `trading_research.mean_reversion` to `run_backtest`. The research hypothesis is that a large short-term decline may be followed by a partial reversal. The entry rule uses six observed SPY closes and targets 100% SPY when `current_close / close_5_observations_ago − 1 <= -0.03`. It tests the equivalent exact price inequality using positive finite closes on the same share basis.
 
 At each backtest close, `SessionContext.execution` contains an immutable portfolio snapshot, accepted pending orders, and that session's opening outcomes. `last_order_outcome(symbol)` searches only outcomes known through that close. Market-only `generate_signals` contexts have no execution feedback. The mean-reversion rule requires the backtest context.
 

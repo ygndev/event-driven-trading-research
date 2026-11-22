@@ -243,7 +243,8 @@ def run_backtest(
             portfolio, tuple(pending.values()), tuple(opening_outcomes)
         )
         context = SessionContext(
-            session, tuple(close_events), context, execution=feedback
+            session, tuple(close_events), context, execution=feedback,
+            _effective_splits=splits.get(session, ()),
         )
         close_events.clear()
         opening_outcomes.clear()
