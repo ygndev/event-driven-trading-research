@@ -337,9 +337,9 @@ Invalid responses fail without publishing a snapshot. The command reports other 
 
 ## Code and data rights
 
-MIT is the preferred license for the original source code. The repository currently has no code license declaration. Before adding one, confirm the copyright holder's exact name, applicable year or years, and authority to license the code. Git author attribution alone leaves ownership unresolved. [MIT license text](https://opensource.org/license/mit)
+The original project source code is licensed under MIT. Copyright (c) 2026 ygndev. [MIT License](LICENSE)
 
-Test fixtures are synthetic and were created for this project. Python dependencies are installed separately and retain their own licenses and notices. Market data and provider payloads, including normalized copies, require independent rights to access, retain and redistribute. Publication of derived outputs can also be subject to provider terms. Keep licensed inputs and restricted outputs outside Git. [Licensed data pilot](docs/licensed_data_pilot_protocol.md) · [Massive Market Data Terms](https://massive.com/legal/market-data-terms-of-service)
+Test fixtures are synthetic and were created for this project. Python dependencies are installed separately and retain their own licenses and notices. Redistributing third-party market data, provider responses, and other externally licensed materials requires separate permission under the applicable terms. Market data and provider payloads, including normalized copies, require independent rights to access and retain. Publication of derived outputs can also be subject to provider terms. Keep licensed inputs and restricted outputs outside Git. [Licensed data pilot](docs/licensed_data_pilot_protocol.md) · [Massive Market Data Terms](https://massive.com/legal/market-data-terms-of-service)
 
 ## Local setup on Windows
 
