@@ -243,6 +243,33 @@ Each result exposes the configured `period`, `warmup_observation_count`, and `co
 
 The windows are fixed research choices. Keep the final-test window reserved for evaluation after rules and assumptions are fixed, since using it for selection compromises the holdout. Executable tests use fabricated prices and do not establish economic out-of-sample performance. A RAW declaration alone cannot verify real-market provenance. Historical ETF research also requires defensible treatment of splits and dividends.
 
+## Historical ETF data preflight
+
+Call `audit_etf_data` from `trading_research.data_audit` before empirical research. Supply one `AuditDataset` per symbol. Each wraps the existing `DatasetMetadata` and ordered `DailyBar` records. `requested_range=(start, end)` is inclusive. `snapshot_id` can identify a provider dataset or stored retrieval. Supply a UTC retrieval timestamp and the provider's declared adjustment convention.
+
+```python
+from trading_research.data_audit import AuditDataset, audit_etf_data
+
+report = audit_etf_data(
+    [AuditDataset(metadata, bars, requested_range=(start, end))],
+    corporate_actions=actions,
+    expected_sessions=exchange_sessions,
+    calendar_range=(calendar_start, calendar_end),
+)
+for finding in report.findings:
+    print(finding.severity, finding.symbol, finding.session, finding.code, finding.message)
+```
+
+The audit reuses the daily OHLCV checks and gathers row, symbol, session order, duplicate, and coverage findings without repairing the source. Missing or inconsistent provenance and a declared split- or total-return-adjusted basis block RAW execution. A consistent RAW declaration remains unverified until independent price provenance is obtained.
+
+Supply the expected-session sequence from a credible exchange calendar. With an explicit inclusive `calendar_range`, the sequence covers that entire range, including holidays and closures. Without bounds, only the span from the first to the last expected session is established. The requested range limits which sessions are required for each symbol. Without a requested range, the supplied calendar span is the expected coverage. Missing and unexpected sessions within checked coverage block. Missing or partial calendar evidence produces an unverified finding.
+
+Supply declared `StockSplit` and `CashDividend` records together. Duplicate or conflicting records, invalid terms, unknown symbols, missing split or ex-date bars, and missing preceding dividend closes block. A payment after the last observed close is a warning. Payment dates need no market bar. Optional `price_move_threshold=Decimal("0.30")` flags absolute overnight or close-to-close moves strictly above 30%. These warnings prompt investigation and do not infer missing corporate actions.
+
+For file integrity, pass `source_path` and `source_sha256`. With an existing Yahoo manifest, use its `source_file` relative to the manifest and its `source_sha256`. Hash checks cover the supplied source bytes. The normalized observations are validated separately, and a matching digest does not establish how those observations were derived. The audit never edits files.
+
+The immutable report records blocking findings, warnings, unverified checks, and checks that passed. A clean schema and a matching calendar do not establish provider licensing, independent as-traded provenance, action completeness, or historical availability. Those remain separate requirements before licensed empirical backtesting.
+
 ## Yahoo Finance daily history
 
 Use this command from the repository root once you have permission for automated acquisition and local storage. The requested range is inclusive, so the command sends an exclusive Yahoo end date of 2026-01-01.
