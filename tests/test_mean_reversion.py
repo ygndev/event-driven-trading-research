@@ -150,7 +150,7 @@ def test_round_trip_counts_observed_closes_from_the_committed_buy():
 def test_pending_buys_and_sells_do_not_repeat_signals(monkeypatch):
     plan = backtest.plan_orders
 
-    def delay_orders(*args):
+    def delay_orders(*args, **kwargs):
         return tuple(
             replace(
                 order,
@@ -158,7 +158,7 @@ def test_pending_buys_and_sells_do_not_repeat_signals(monkeypatch):
                     day(9) if order.side is OrderSide.BUY else day(15)
                 ),
             )
-            for order in plan(*args)
+            for order in plan(*args, **kwargs)
         )
 
     monkeypatch.setattr(backtest, "plan_orders", delay_orders)

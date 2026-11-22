@@ -1,6 +1,6 @@
 """Plan whole-share orders from completed-session target weights."""
 
-from collections.abc import Iterable
+from collections.abc import Collection, Iterable
 from datetime import date, datetime
 from decimal import Decimal, localcontext
 
@@ -52,11 +52,15 @@ def plan_orders(
     targets: Iterable[SignalEvent],
     portfolio: PortfolioSnapshot,
     context: SessionContext,
+    *,
+    skip_symbols: Collection[str] = (),
 ) -> tuple[MarketOrder, ...]:
     """Size a complete allocation at current closes without booking orders.
 
     A nonempty allocation must cover all open holdings. Callers include
     previously retained targets themselves. Empty targets request no changes.
+    Skipped symbols still count toward the allocation and any held shares still
+    require current marks.
     """
     if not isinstance(portfolio, PortfolioSnapshot):
         raise ValueError("planning requires a PortfolioSnapshot")
@@ -105,8 +109,9 @@ def plan_orders(
         if sum((weights[symbol] for symbol in symbols), Decimal(0)) > 1:
             raise ValueError("aggregate target weights must not exceed 1")
 
+    planned_symbols = [symbol for symbol in symbols if symbol not in skip_symbols]
     required = set(portfolio.positions) | {
-        symbol for symbol, weight in weights.items() if weight > 0
+        symbol for symbol in planned_symbols if weights[symbol] > 0
     }
     prices = _reference_prices(context, required)
     equity = mark_to_market(portfolio, prices)
@@ -116,7 +121,7 @@ def plan_orders(
     sells: list[MarketOrder] = []
     buys: list[MarketOrder] = []
     with localcontext(USD_CONTEXT):
-        for symbol in symbols:
+        for symbol in planned_symbols:
             target_notional = equity * weights[symbol]
             # Decimal // floors a nonnegative quotient without rounding it.
             target_shares = (

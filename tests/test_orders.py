@@ -84,7 +84,7 @@ def test_rejection_retains_the_explicit_reason(order, accept):
 
 
 @pytest.mark.parametrize("state", [OrderState.FILLED, OrderState.REJECTED])
-@pytest.mark.parametrize("target", ["ACCEPTED", "REJECTED", "FILLED"])
+@pytest.mark.parametrize("target", ["ACCEPTED", "REJECTED", "FILLED", "CANCELLED"])
 def test_terminal_states_reject_further_transitions(order, state, target):
     ledger = accepted_ledger(order)
     fill = fill_for(order)
@@ -97,6 +97,7 @@ def test_terminal_states_reject_further_transitions(order, state, target):
         "ACCEPTED": lambda: ledger.accept(order.order_id),
         "REJECTED": lambda: ledger.reject(order.order_id, "Second decision"),
         "FILLED": lambda: ledger.record_fill(fill),
+        "CANCELLED": lambda: ledger.cancel(order.order_id, session=LATER),
     }
     history = ledger.history()
     with pytest.raises(ValueError, match=f"from {state.name} to {target}"):
@@ -104,6 +105,29 @@ def test_terminal_states_reject_further_transitions(order, state, target):
 
     assert ledger.history() == history
     assert ledger.snapshot(order.order_id) is history[-1]
+
+
+def test_cancellation_only_applies_once_to_an_accepted_order_at_a_later_close(order):
+    ledger = accepted_ledger(order)
+    original = ledger.history()
+
+    with pytest.raises(ValueError, match="later than the decision session"):
+        ledger.cancel(order.order_id, session=DECISION)
+    assert ledger.history() == original
+
+    ledger.cancel(order.order_id, session=NEXT)
+    cancelled = ledger.snapshot(order.order_id)
+    assert cancelled.order is order
+    assert cancelled.state is OrderState.CANCELLED
+    assert cancelled.cancellation_session == NEXT
+    assert cancelled.fill is cancelled.rejection_reason is None
+
+    with pytest.raises(ValueError, match="from CANCELLED to CANCELLED"):
+        ledger.cancel(order.order_id, session=LATER)
+    with pytest.raises(ValueError, match="from CANCELLED to FILLED"):
+        ledger.record_fill(fill_for(order, LATER))
+    assert ledger.history() == (*original, cancelled)
+    assert original[-1].state is OrderState.ACCEPTED
 
 
 def test_cannot_fill_before_acceptance_or_accept_twice(order):

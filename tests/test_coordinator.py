@@ -107,6 +107,42 @@ def test_coordinated_round_trip_books_prices_and_commissions_once():
     assert portfolio.history() == ()
 
 
+def test_cancellation_rejects_a_previously_priced_proposal_without_booking_it():
+    coordinator = ExecutionCoordinator(
+        accepted_orders(BUY), PortfolioLedger(1000)
+    )
+    proposal = proposal_for(BUY, session=TUESDAY)
+    before = state_of(coordinator, "buy")
+
+    coordinator.submit_orders((), cancellations=(("buy", MONDAY),))
+    cancelled = coordinator.order_snapshot("buy")
+    after = state_of(coordinator, "buy")
+    assert cancelled.state is OrderState.CANCELLED
+    assert cancelled.cancellation_session == MONDAY
+    assert after[1] == (*before[1], cancelled)
+    assert after[2:] == before[2:]
+
+    with pytest.raises(ValueError, match="from CANCELLED to FILLED"):
+        coordinator.execute("buy", proposal)
+
+    assert state_of(coordinator, "buy") == after
+
+
+def test_invalid_replacement_rolls_back_staged_cancellations_and_acceptances():
+    coordinator = ExecutionCoordinator(
+        accepted_orders(BUY), PortfolioLedger(1000)
+    )
+    before = state_of(coordinator, "buy")
+    replacement = MarketOrder("new", "SPY", OrderSide.BUY, 2, MONDAY)
+
+    with pytest.raises(ValueError, match="duplicate order identifier 'buy'"):
+        coordinator.submit_orders((replacement, BUY), cancellations=(("buy", MONDAY),))
+
+    assert state_of(coordinator, "buy") == before
+    with pytest.raises(ValueError, match="unknown order identifier 'new'"):
+        coordinator.order_snapshot("new")
+
+
 def test_insufficient_buy_cash_including_commission_rejects_only_the_order():
     coordinator = ExecutionCoordinator(
         accepted_orders(BUY), PortfolioLedger(100)

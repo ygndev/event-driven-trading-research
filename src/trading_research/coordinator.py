@@ -34,10 +34,17 @@ class ExecutionCoordinator:
             raise ValueError("order and portfolio histories disagree on fills")
         self._ledgers = (orders, portfolio)
 
-    def submit_orders(self, orders: Iterable[MarketOrder]) -> None:
-        """Register and accept a batch in order, without booking any cash."""
+    def submit_orders(
+        self,
+        orders: Iterable[MarketOrder],
+        *,
+        cancellations: Iterable[tuple[str, date]] = (),
+    ) -> None:
+        """Stage cancellations and new acceptances together at the decision close."""
         order_ledger, portfolio = self._ledgers
         staged = order_ledger._copy()
+        for order_id, session in cancellations:
+            staged.cancel(order_id, session=session)
         for order in orders:
             staged.register(order)
             staged.accept(order.order_id)

@@ -19,13 +19,17 @@ class OrderState(Enum):
     ACCEPTED = "accepted"
     FILLED = "filled"
     REJECTED = "rejected"
+    CANCELLED = "cancelled"
 
 
 _TRANSITIONS = {
     OrderState.CREATED: (OrderState.ACCEPTED, OrderState.REJECTED),
-    OrderState.ACCEPTED: (OrderState.FILLED, OrderState.REJECTED),
+    OrderState.ACCEPTED: (
+        OrderState.FILLED, OrderState.REJECTED, OrderState.CANCELLED,
+    ),
     OrderState.FILLED: (),
     OrderState.REJECTED: (),
+    OrderState.CANCELLED: (),
 }
 
 
@@ -125,6 +129,7 @@ class OrderSnapshot:
     state: OrderState
     fill: Fill | None = None
     rejection_reason: str | None = None
+    cancellation_session: date | None = None
 
 
 class OrderLedger:
@@ -157,6 +162,18 @@ class OrderLedger:
             raise ValueError("rejection reason must be a nonempty string")
         self._record(
             OrderSnapshot(order, OrderState.REJECTED, rejection_reason=reason)
+        )
+
+    def cancel(self, order_id: str, *, session: date) -> None:
+        """End an accepted order at a later decision close."""
+        order = self._order_for_transition(order_id, OrderState.CANCELLED)
+        _validate_session(session, "cancellation session")
+        if session <= order.decision_session:
+            raise ValueError(
+                "cancellation session must be later than the decision session"
+            )
+        self._record(
+            OrderSnapshot(order, OrderState.CANCELLED, cancellation_session=session)
         )
 
     def record_fill(self, fill: Fill) -> None:

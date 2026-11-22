@@ -197,6 +197,7 @@ def run_backtest(
     context: SessionContext | None = None
     observed_symbols: set[str] = set()
     target_weights: dict[str, int | float] = {}
+    replacements_without_close: set[str] = set()
     signals: list[SignalEvent] = []
     sessions: list[SessionValuation] = []
 
@@ -237,7 +238,7 @@ def run_backtest(
                 del pending[order.order_id]
 
     def finish_session(session: date) -> None:
-        nonlocal context
+        nonlocal context, target_weights, replacements_without_close
         portfolio = coordinator.portfolio_snapshot()
         feedback = ExecutionFeedback(
             portfolio, tuple(pending.values()), tuple(opening_outcomes)
@@ -249,23 +250,44 @@ def run_backtest(
         close_events.clear()
         opening_outcomes.clear()
         emitted = _evaluate_strategy(strategy, context, observed_symbols)
-        signals.extend(emitted)
-
-        if emitted:
-            target_weights.update(
-                (signal.symbol, signal.target_exposure) for signal in emitted
-            )
-            allocation = (
-                SignalEvent(symbol, session, weight)
-                for symbol, weight in target_weights.items()
-            )
-            orders = plan_orders(allocation, portfolio, context)
-            coordinator.submit_orders(orders)
-            pending.update((order.order_id, order) for order in orders)
-
         closes = {
             event.bar.symbol: event.bar.close for event in context.events
         }
+        if emitted:
+            updates = {signal.symbol: signal.target_exposure for signal in emitted}
+            next_weights = target_weights | updates
+            cancelled = {
+                order_id: order.symbol
+                for order_id, order in pending.items()
+                if order.symbol in updates
+                and updates[order.symbol] != target_weights[order.symbol]
+            }
+            retained_pending = {
+                order.symbol for order_id, order in pending.items()
+                if order_id not in cancelled
+            }
+            # Cancellation needs no price. Replacement sizing still needs a current close.
+            waiting_for_close = replacements_without_close.union(
+                cancelled.values()
+            ).difference(closes)
+            allocation = (
+                SignalEvent(symbol, session, weight)
+                for symbol, weight in next_weights.items()
+            )
+            orders = plan_orders(
+                allocation, portfolio, context,
+                skip_symbols=retained_pending | waiting_for_close,
+            )
+            coordinator.submit_orders(
+                orders, cancellations=((order_id, session) for order_id in cancelled)
+            )
+            for order_id in cancelled:
+                del pending[order_id]
+            pending.update((order.order_id, order) for order in orders)
+            target_weights = next_weights
+            replacements_without_close = waiting_for_close
+            signals.extend(emitted)
+
         equity = mark_to_market(portfolio, closes, include_receivables=True)
         sessions.append(SessionValuation(session, portfolio, equity))
         if session in closing_dates:

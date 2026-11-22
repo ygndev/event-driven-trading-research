@@ -267,6 +267,127 @@ def test_missing_symbol_open_keeps_the_order_pending(returns):
         assert result.fills == ()
 
 
+def test_newer_flat_target_cancels_the_audited_pending_buy():
+    first, second, third = (date(2024, 1, day) for day in (2, 3, 4))
+    spy = dataset("SPY", (first, 100, 100), (third, 100, 100))
+    qqq = dataset("QQQ", (second, 100, 100))
+
+    def strategy(context):
+        if context.session_date == first:
+            return (SignalEvent("SPY", first, 1),)
+        if context.session_date == second:
+            return (SignalEvent("SPY", second, 0),)
+        return ()
+
+    result = run([spy, qqq], strategy)
+    assert result.signals == (SignalEvent("SPY", first, 1), SignalEvent("SPY", second, 0))
+    order_id = "2024-01-02:SPY"
+    actual = (
+        [(entry.order.order_id, entry.state.name) for entry in result.order_history],
+        [(fill.order_id, fill.execution_session, fill.quantity) for fill in result.fills],
+        dict(result.sessions[-1].portfolio.positions),
+        result.sessions[-1].portfolio.cash,
+    )
+    assert actual == (
+        [(order_id, "CREATED"), (order_id, "ACCEPTED"), (order_id, "CANCELLED")],
+        [],
+        {},
+        Decimal("1000"),
+    ), actual
+    cancellation = result.order_history[-1]
+    assert cancellation.cancellation_session == second
+    assert cancellation.fill is cancellation.rejection_reason is None
+    assert result.outstanding_orders == result.rejected_orders == result.transactions == ()
+    assert all(value.portfolio == result.sessions[0].portfolio for value in result.sessions)
+    assert run([spy, qqq], strategy) == result
+
+
+def test_smaller_target_cancels_and_waits_for_a_current_close_to_resize():
+    fourth, fifth = date(2025, 1, 8), date(2025, 1, 9)
+    spy = dataset("SPY", (FIRST, 100, 100), (fourth, 120, 80), (fifth, 90, 90))
+    qqq = dataset("QQQ", (SECOND, 100, 100), (THIRD, 100, 100))
+    feedback = {}
+
+    def strategy(context):
+        session = context.session_date
+        feedback[session] = context.execution
+        if session == FIRST:
+            return (SignalEvent("SPY", session, 1),)
+        if session == SECOND:
+            return (SignalEvent("SPY", session, 0.4),)
+        if session in (THIRD, fourth):
+            return (SignalEvent("QQQ", session, 0),)
+        return ()
+
+    result = run([spy, qqq], strategy, fee=1)
+
+    initial, replacement = result.orders
+    assert (initial.order_id, initial.quantity) == ("2025-01-03:SPY", 10)
+    assert (replacement.order_id, replacement.quantity) == ("2025-01-08:SPY", 5)
+    _, _, cancelled, *_ = result.order_history
+    assert cancelled.order is initial
+    assert cancelled.state is OrderState.CANCELLED
+    assert cancelled.cancellation_session == SECOND
+    assert feedback[SECOND].pending_orders == (initial,)
+    assert feedback[THIRD].pending_orders == feedback[THIRD].outcomes == ()
+    assert feedback[fourth].portfolio.cash == 1000
+    assert feedback[fourth].portfolio.positions == {}
+    assert feedback[fourth].outcomes == ()
+    fill, = result.fills
+    assert (fill.order_id, fill.execution_session, fill.quantity) == (
+        replacement.order_id, fifth, 5,
+    )
+    assert result.sessions[-1].portfolio.positions == {"SPY": 5}
+    assert result.sessions[-1].portfolio.cash == 549
+    assert result.sessions[-1].portfolio.cumulative_commissions == 1
+
+
+def test_reaffirmed_target_keeps_the_original_accepted_order():
+    spy = dataset("SPY", (FIRST, 100, 100), (THIRD, 99, 102))
+    qqq = dataset("QQQ", (SECOND, 100, 100))
+
+    def strategy(context):
+        if context.session_date in (FIRST, SECOND):
+            return (SignalEvent("SPY", context.session_date, 0.5),)
+        return ()
+
+    result = run([spy, qqq], strategy)
+
+    order, = result.orders
+    assert (order.order_id, order.quantity) == ("2025-01-03:SPY", 5)
+    assert [entry.state for entry in result.order_history] == [
+        OrderState.CREATED, OrderState.ACCEPTED, OrderState.FILLED,
+    ]
+    fill, = result.fills
+    assert (fill.order_id, fill.execution_session) == (order.order_id, THIRD)
+    assert result.sessions[-1].portfolio.positions == {"SPY": 5}
+
+
+def test_flat_target_at_close_preserves_buy_filled_at_that_open():
+    spy = dataset("SPY", (FIRST, 100, 100), (SECOND, 95, 100))
+
+    def strategy(context):
+        target = 0.5 if context.session_date == FIRST else 0
+        return (SignalEvent("SPY", context.session_date, target),)
+
+    result = run([spy], strategy, fee=1)
+
+    buy, sell = result.orders
+    assert (buy.side, sell.side) == (OrderSide.BUY, OrderSide.SELL)
+    assert [entry.state for entry in result.order_history] == [
+        OrderState.CREATED, OrderState.ACCEPTED, OrderState.FILLED,
+        OrderState.CREATED, OrderState.ACCEPTED,
+    ]
+    fill, = result.fills
+    assert fill.order_id == buy.order_id and fill.execution_session == SECOND
+    pending, = result.outstanding_orders
+    assert pending.order == sell
+    assert sell.decision_session == SECOND and sell.quantity == 5
+    assert result.sessions[-1].portfolio.positions == {"SPY": 5}
+    assert result.sessions[-1].portfolio.cash == 524
+    assert result.sessions[-1].portfolio.cumulative_commissions == 1
+
+
 def test_held_symbol_without_current_close_fails_without_a_stale_mark():
     spy = dataset("SPY", (FIRST, 25, 25), (SECOND, 25, 26))
     qqq = dataset("QQQ", (THIRD, 30, 30))
@@ -361,8 +482,8 @@ def test_oversized_sell_is_rejected_for_insufficient_holdings(monkeypatch):
     spy = dataset("SPY", (FIRST, 50, 50), (SECOND, 50, 50), (THIRD, 50, 50))
     plan = backtest.plan_orders
 
-    def oversize_sell(*args):
-        orders = plan(*args)
+    def oversize_sell(*args, **kwargs):
+        orders = plan(*args, **kwargs)
         return tuple(
             replace(order, quantity=order.quantity + 1)
             if order.side is OrderSide.SELL else order
