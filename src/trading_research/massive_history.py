@@ -3,13 +3,14 @@
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
+from decimal import Decimal
 from fractions import Fraction
 from re import fullmatch
 from urllib.parse import parse_qs, unquote, urlsplit
 from zoneinfo import ZoneInfo
 
 from ._money import decimal_amount
-from .corporate_actions import StockSplit
+from .corporate_actions import CashDividend, StockSplit
 from .daily_bars import (
     DailyBar, DatasetMetadata, PriceAdjustment, _validate_text, validate_daily_bars,
 )
@@ -176,3 +177,27 @@ def parse_split(record: Mapping[str, object], *, expected_symbol: str) -> StockS
     if old_shares == new_shares or (new_shares > old_shares) != (kind == "forward_split"):
         raise ValueError("split ratio conflicts with adjustment_type")
     return StockSplit(expected_symbol, day, Fraction(new_shares) / Fraction(old_shares))
+
+
+def parse_dividend(
+    record: Mapping[str, object],
+    *,
+    expected_symbol: str,
+    ordinary_confirmed: bool,
+    share_basis: str,
+) -> CashDividend:
+    """Map an independently classified ordinary USD event on prior-close shares."""
+    if not isinstance(record, Mapping) or record.get("ticker") != expected_symbol:
+        raise ValueError("Dividend ticker must match the snapshot instrument.")
+    if record.get("distribution_type") != "recurring" or ordinary_confirmed is not True:
+        raise ValueError("Dividend requires a supported classification and ordinary-event review.")
+    if record.get("currency") != "USD":
+        raise ValueError("Dividend currency must be USD.")
+    if share_basis != "prior_close":
+        raise ValueError("Dividend original cash amount must be verified on prior-close shares.")
+    amount = record.get("cash_amount")
+    if type(amount) not in (int, Decimal):
+        raise ValueError("Dividend requires an exact original cash_amount.")
+    ex_date = _date(record.get("ex_dividend_date"), "ex_dividend_date")
+    payment_date = _date(record.get("pay_date"), "pay_date")
+    return CashDividend(record.get("id"), expected_symbol, ex_date, payment_date, amount)
