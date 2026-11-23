@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  offline-tests:
+    name: Offline tests (Python 3.11)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+      - name: Install the package and test dependencies
+        run: |
+          python --version
+          python -m pip install -e '.[dev]'
+          python -m pip check
+      - name: Run the offline test suite
+        run: |
+          # Give pytest a separate network namespace and run it as the runner user.
+          sudo unshare --net --setgid "$(id -g)" --setuid "$(id -u)" -- \
+            "$(command -v python)" -I -B -m pytest -q
+      - name: Check installed package imports
+        run: python -I -B -c "import trading_research, trading_research.massive_history, trading_research.yahoo_history"
