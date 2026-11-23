@@ -343,7 +343,7 @@ Test fixtures are synthetic and were created for this project. Python dependenci
 
 ## Local setup on Windows
 
-The package declares Python 3.11 or newer. The reference environment was tested on Windows x64 with CPython 3.11.9. The [Windows constraints](constraints-windows-py311.txt) record exact installed versions for that environment. Other operating systems and Python versions remain unverified. The constraints pin installed packages, while pip resolves the isolated build backend from `pyproject.toml`. [pip constraints documentation](https://pip.pypa.io/en/stable/user_guide/#constraints-files)
+The package declares Python 3.11 or newer. The reference environment was tested on Windows x64 with CPython 3.11.9. The [Windows constraints](constraints-windows-py311.txt) record exact installed versions for that environment. The constraints pin installed packages, while pip resolves the isolated build backend from `pyproject.toml`. [pip constraints documentation](https://pip.pypa.io/en/stable/user_guide/#constraints-files)
 
 Run these PowerShell commands from a checkout on D: using CPython 3.11.9. The environment variables apply to the current PowerShell session. Package installation can use an index. The tests use synthetic fixtures and run offline.
 
@@ -366,3 +366,7 @@ python -m venv .venv
 pandas and yfinance are direct runtime requirements for the bundled Yahoo adapter. pandas also supplies the Windows `tzdata` dependency used by `zoneinfo`. pytest is available through the optional `dev` extra. setuptools builds the package. The constraints fix the tested dependency set while the package metadata retains its install ranges.
 
 The virtual environment, caches, and temporary files are local to the checkout. Keep provider data under `data/`, generated results under `outputs/`, and local credentials in ignored files.
+
+## Continuous integration
+
+GitHub Actions installs the `dev` extra on Ubuntu 24.04 with Python 3.11 and resolves dependencies from `pyproject.toml`. The test process runs in a separate network namespace. The workflow checks imports in Python isolated mode and uses the official actions' major-version tags to receive compatible updates.
