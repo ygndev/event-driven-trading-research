@@ -1,12 +1,15 @@
 """Evaluate fixed SPY strategies in independently initialized date windows."""
 
 from bisect import bisect_left, bisect_right
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 
 from ._money import Money
-from .benchmark import CommonWindowBenchmarkComparison, _compare_spy_window
+from .benchmark import (
+    CommonWindowBenchmarkComparison, _compare_spy_window, _comparison_actions,
+)
+from .corporate_actions import CashDividend, StockSplit
 from .daily_bars import DailyBar, DatasetMetadata, PriceAdjustment, validate_daily_bars
 from .momentum import _LOOKBACK_INTERVALS as _MOMENTUM_LOOKBACK
 
@@ -53,11 +56,14 @@ def evaluate_spy_research_periods(
     adjustment_bps: Money,
     commission: Money,
     periods: Sequence[ResearchPeriod] = RESEARCH_PERIODS,
+    corporate_actions: Iterable[StockSplit | CashDividend] = (),
+    strict_warmup: bool = True,
 ) -> tuple[ResearchPeriodResult, ...]:
     """Score each window from its first observed close with 63 earlier bars.
 
     Replay starts at the beginning of the supplied history to retain the
     momentum schedule. Trading stays inactive until the evaluation anchor.
+    strict_warmup=False explicitly permits a delayed anchor for synthetic studies.
     """
     if not isinstance(periods, Sequence):
         raise ValueError("periods must be an ordered sequence of ResearchPeriod values")
@@ -80,12 +86,21 @@ def evaluate_spy_research_periods(
     validate_daily_bars(observations, metadata)
     dates = tuple(bar.session_date for bar in observations)
 
+    actions = _comparison_actions(metadata, observations, corporate_actions)
+    if type(strict_warmup) is not bool:
+        raise ValueError("strict_warmup must be a bool")
+
     results: list[ResearchPeriodResult] = []
     for period in windows:
         start = bisect_left(dates, period.start_date)
         stop = bisect_right(dates, period.end_date)
         if start == stop:
             raise ValueError(f"{period.name}: no SPY observations in the period")
+        if strict_warmup and start < _MOMENTUM_LOOKBACK:
+            raise ValueError(
+                f"{period.name}: evaluation requires {_MOMENTUM_LOOKBACK} earlier SPY closes "
+                "before the first observed session in the period"
+            )
         anchor_index = max(start, _MOMENTUM_LOOKBACK)
         if anchor_index >= stop:
             raise ValueError(
@@ -98,6 +113,11 @@ def evaluate_spy_research_periods(
             anchor_index=anchor_index,
             initial_cash=initial_cash, adjustment_bps=adjustment_bps,
             commission=commission,
+            corporate_actions=tuple(
+                action for action in actions
+                if (action.effective_session if isinstance(action, StockSplit) else action.ex_date)
+                <= dates[stop - 1]
+            ),
         )
         results.append(ResearchPeriodResult(period, anchor_index, comparison))
     return tuple(results)
