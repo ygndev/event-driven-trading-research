@@ -7,9 +7,9 @@ from decimal import Decimal, localcontext
 from itertools import combinations
 
 from ._money import USD_CONTEXT, Money, decimal_amount
-from .backtest import BacktestResult, _schedule_actions, run_backtest
+from .backtest import BacktestResult, run_backtest
 from .corporate_actions import CashDividend, StockSplit
-from .daily_bars import DailyBar, DatasetMetadata
+from .daily_bars import DailyBar, DatasetMetadata, validate_daily_bars
 from .mean_reversion import _LOOKBACK_INTERVALS as _MEAN_REVERSION_LOOKBACK
 from .mean_reversion import short_term_mean_reversion
 from .momentum import _LOOKBACK_INTERVALS as _MOMENTUM_LOOKBACK
@@ -230,6 +230,7 @@ def _comparison_inputs(
         raise ValueError(
             f"benchmark comparison requires {minimum_closes} SPY closes"
         )
+    validate_daily_bars(observations, metadata)
 
     return (
         observations,
@@ -241,10 +242,9 @@ def _comparison_inputs(
 
 def _comparison_actions(
     metadata: DatasetMetadata,
-    bars: tuple[DailyBar, ...],
     corporate_actions: Iterable[StockSplit | CashDividend],
 ) -> tuple[StockSplit | CashDividend, ...]:
-    """Validate identity and uniqueness, then schedule events through the final bar."""
+    """Freeze and validate action records independently of period coverage."""
     actions = tuple(corporate_actions)
     splits = set()
     dividend_dates = set()
@@ -265,14 +265,7 @@ def _comparison_actions(
                 raise ValueError("duplicate or conflicting dividend")
             dividend_ids.add(action.action_id)
             dividend_dates.add(action.ex_date)
-    relevant = tuple(
-        action for action in actions
-        if (action.effective_session if isinstance(action, StockSplit) else action.ex_date)
-        <= bars[-1].session_date
-    )
-    if relevant:
-        _schedule_actions(((metadata, bars),), relevant)
-    return relevant
+    return actions
 
 
 def _compare_spy_runs(
@@ -289,7 +282,11 @@ def _compare_spy_runs(
     corporate_actions: Iterable[StockSplit | CashDividend] = (),
 ) -> tuple[tuple[BenchmarkRun, ...], BenchmarkRun, BenchmarkRun]:
     datasets = ((metadata, bars),)
-    actions = _comparison_actions(metadata, bars, corporate_actions)
+    actions = tuple(
+        action for action in _comparison_actions(metadata, corporate_actions)
+        if (action.effective_session if isinstance(action, StockSplit) else action.ex_date)
+        <= bars[-1].session_date
+    )
     anchor_bar = bars[anchor_index]
 
     def run(

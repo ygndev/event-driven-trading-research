@@ -86,7 +86,7 @@ def evaluate_spy_research_periods(
     validate_daily_bars(observations, metadata)
     dates = tuple(bar.session_date for bar in observations)
 
-    actions = _comparison_actions(metadata, observations, corporate_actions)
+    actions = _comparison_actions(metadata, corporate_actions)
     if type(strict_warmup) is not bool:
         raise ValueError("strict_warmup must be a bool")
 
@@ -113,11 +113,7 @@ def evaluate_spy_research_periods(
             anchor_index=anchor_index,
             initial_cash=initial_cash, adjustment_bps=adjustment_bps,
             commission=commission,
-            corporate_actions=tuple(
-                action for action in actions
-                if (action.effective_session if isinstance(action, StockSplit) else action.ex_date)
-                <= dates[stop - 1]
-            ),
+            corporate_actions=actions,
         )
         results.append(ResearchPeriodResult(period, anchor_index, comparison))
     return tuple(results)

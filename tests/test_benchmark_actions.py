@@ -276,3 +276,82 @@ def test_invalid_ratio_is_revalidated_without_mutating_supplied_action():
     with pytest.raises(ValueError, match="split ratio"):
         comparison(bars, (split,))
     assert split.ratio == 0
+
+
+@pytest.fixture
+def april_history():
+    # Synthetic observations, with a deliberate future gap on April 14.
+    return tuple(bar for bar in tape(115) if bar.session_date != date(2020, 4, 14))
+
+
+def april_actions():
+    return (
+        StockSplit("SPY", date(2020, 4, 14), 2),
+        CashDividend("future-april", "SPY", date(2020, 4, 14), date(2020, 4, 20), 1),
+    )
+
+
+@pytest.mark.parametrize("indices", [(0,), (1,), (0, 1)])
+def test_future_action_missing_its_bar_cannot_block_april_7(april_history, indices):
+    window = ResearchPeriod("early", date(2020, 4, 1), date(2020, 4, 7))
+    actions = tuple(april_actions()[i] for i in indices)
+    expected = evaluate(april_history, periods=(window,))
+    actual = evaluate(april_history, iter(actions), periods=(window,))
+    assert actual == expected
+    for run in portfolios(actual[0].comparison):
+        assert not run.backtest.split_adjustments
+        assert not run.backtest.dividend_payments
+        assert all(not row.portfolio.unpaid_receivables for row in run.backtest.sessions)
+
+
+@pytest.mark.parametrize("action", april_actions())
+def test_missing_action_bar_inside_selected_period_still_fails(april_history, action):
+    window = ResearchPeriod("relevant", date(2020, 4, 1), date(2020, 4, 20))
+    with pytest.raises(ValueError, match="requires an observed session"):
+        evaluate(april_history, (action,), periods=(window,))
+
+
+@pytest.mark.parametrize("action", april_actions())
+def test_cutoff_does_not_hide_global_duplicate_identities(april_history, action):
+    window = ResearchPeriod("early", date(2020, 4, 1), date(2020, 4, 7))
+    with pytest.raises(ValueError, match="duplicate or conflicting"):
+        evaluate(april_history, (action, action), periods=(window,))
+
+
+def test_each_period_filters_before_session_validation_and_keeps_actual_pay_date(april_history):
+    windows = (
+        ResearchPeriod("early", date(2020, 4, 1), date(2020, 4, 7)),
+        ResearchPeriod("later", date(2020, 4, 15), date(2020, 4, 22)),
+    )
+    action = CashDividend("in-window", "SPY", date(2020, 4, 6), date(2020, 5, 1), Decimal("1.25"))
+    # A missing action session beyond every selected window is irrelevant to both.
+    future = StockSplit("SPY", date(2020, 4, 23), 2)
+    bars = tuple(bar for bar in april_history if bar.session_date != future.effective_session)
+    expected = evaluate(bars, (action,), periods=windows)
+    actual = evaluate(bars, (action, future), periods=windows)
+    assert actual == expected
+    early, later = (row.comparison for row in actual)
+    holding = early.buy_and_hold.backtest
+    assert holding.sessions[-1].equity == Decimal("1012.50")
+    claim, = holding.sessions[-1].portfolio.unpaid_receivables
+    assert claim.total_amount == Decimal("12.50") and claim.entitled_shares == 10
+    payment, = holding.dividend_payments
+    assert payment.session_date == action.payment_date
+    for run in portfolios(later):
+        anchor = run.backtest.sessions[0].portfolio
+        assert anchor.cash == 1000 and not anchor.positions and not anchor.unpaid_receivables
+    assert later.buy_and_hold.backtest.dividend_payments == ()
+
+
+@pytest.mark.parametrize("api", [
+    compare_spy_benchmarks, compare_spy_mean_reversion_benchmarks, compare_spy_common_window,
+])
+def test_malformed_final_bar_uses_same_value_error_with_and_without_actions(api):
+    bars = tape()
+    malformed = (*bars[:-1], object())
+    errors = []
+    for actions in ((), (cash(bars),)):
+        with pytest.raises(ValueError, match="bar 70: expected a DailyBar") as error:
+            api(META, malformed, corporate_actions=actions, **COSTS)
+        errors.append(str(error.value))
+    assert errors[0] == errors[1]
