@@ -63,10 +63,10 @@ def bars():
     return observations
 
 
-def evaluate(bars, *, periods=RESEARCH_PERIODS, bps=25, fee=Decimal("1.25")):
+def evaluate(bars, *, periods=RESEARCH_PERIODS, bps=25, fee=Decimal("1.25"), strict_warmup=True):
     return evaluate_spy_research_periods(
         METADATA, bars, initial_cash=1000, adjustment_bps=bps, commission=fee,
-        periods=periods,
+        periods=periods, strict_warmup=strict_warmup,
     )
 
 
@@ -295,7 +295,7 @@ def test_period_ending_at_anchor_cannot_use_later_open_for_benchmark(bars):
 
 def test_first_eligible_close_can_follow_in_period_warmup(bars):
     period = ResearchPeriod("partial_history", bars[61].session_date, date(2010, 1, 5))
-    result, = evaluate(bars, periods=(period,))
+    result, = evaluate(bars, periods=(period,), strict_warmup=False)
 
     assert result.warmup_observation_count == 63
     assert result.comparison.start_session == date(2010, 1, 4)

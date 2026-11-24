@@ -8,7 +8,8 @@ from itertools import combinations
 
 from ._money import USD_CONTEXT, Money, decimal_amount
 from .backtest import BacktestResult, run_backtest
-from .daily_bars import DailyBar, DatasetMetadata
+from .corporate_actions import CashDividend, StockSplit
+from .daily_bars import DailyBar, DatasetMetadata, validate_daily_bars
 from .mean_reversion import _LOOKBACK_INTERVALS as _MEAN_REVERSION_LOOKBACK
 from .mean_reversion import short_term_mean_reversion
 from .momentum import _LOOKBACK_INTERVALS as _MOMENTUM_LOOKBACK
@@ -183,6 +184,7 @@ def _comparison_window(
         or anchor.portfolio.initial_cash != initial_cash
         or anchor.portfolio.cash != initial_cash
         or anchor.portfolio.positions
+        or anchor.portfolio.unpaid_receivables
         or anchor.portfolio.cumulative_commissions
     ):
         raise ValueError(
@@ -228,6 +230,7 @@ def _comparison_inputs(
         raise ValueError(
             f"benchmark comparison requires {minimum_closes} SPY closes"
         )
+    validate_daily_bars(observations, metadata)
 
     return (
         observations,
@@ -235,6 +238,34 @@ def _comparison_inputs(
         decimal_amount(adjustment_bps, "adjustment_bps", allow_zero=True),
         decimal_amount(commission, "commission", allow_zero=True),
     )
+
+
+def _comparison_actions(
+    metadata: DatasetMetadata,
+    corporate_actions: Iterable[StockSplit | CashDividend],
+) -> tuple[StockSplit | CashDividend, ...]:
+    """Freeze and validate action records independently of period coverage."""
+    actions = tuple(corporate_actions)
+    splits = set()
+    dividend_dates = set()
+    dividend_ids = set()
+    for action in actions:
+        if not isinstance(action, (StockSplit, CashDividend)):
+            raise ValueError("corporate actions must be StockSplit or CashDividend records")
+        # Recheck constructor invariants without altering the supplied record.
+        replace(action)
+        if action.symbol != metadata.symbol:
+            raise ValueError("corporate action symbol must match SPY")
+        if isinstance(action, StockSplit):
+            if action.effective_session in splits:
+                raise ValueError("duplicate or conflicting split")
+            splits.add(action.effective_session)
+        else:
+            if action.action_id in dividend_ids or action.ex_date in dividend_dates:
+                raise ValueError("duplicate or conflicting dividend")
+            dividend_ids.add(action.action_id)
+            dividend_dates.add(action.ex_date)
+    return actions
 
 
 def _compare_spy_runs(
@@ -248,8 +279,14 @@ def _compare_spy_runs(
     initial_cash: Decimal,
     adjustment_bps: Decimal,
     commission: Decimal,
+    corporate_actions: Iterable[StockSplit | CashDividend] = (),
 ) -> tuple[tuple[BenchmarkRun, ...], BenchmarkRun, BenchmarkRun]:
     datasets = ((metadata, bars),)
+    actions = tuple(
+        action for action in _comparison_actions(metadata, corporate_actions)
+        if (action.effective_session if isinstance(action, StockSplit) else action.ex_date)
+        <= bars[-1].session_date
+    )
     anchor_bar = bars[anchor_index]
 
     def run(
@@ -263,6 +300,7 @@ def _compare_spy_runs(
         return run_backtest(
             datasets, active, initial_cash=initial_cash,
             adjustment_bps=adjustment_bps, commission=commission,
+            corporate_actions=actions,
         )
 
     strategy_results = tuple(
@@ -318,6 +356,7 @@ def compare_spy_benchmarks(
     initial_cash: Money,
     adjustment_bps: Money,
     commission: Money,
+    corporate_actions: Iterable[StockSplit | CashDividend] = (),
 ) -> BenchmarkComparison:
     """Compare all three approaches from the first scheduled momentum close."""
     observations, capital, bps, fee = _comparison_inputs(
@@ -327,7 +366,7 @@ def compare_spy_benchmarks(
     (momentum,), holding, cash = _compare_spy_runs(
         metadata, observations, (("SPY momentum", time_series_momentum),),
         anchor_index=_MOMENTUM_LOOKBACK, initial_cash=capital,
-        adjustment_bps=bps, commission=fee,
+        adjustment_bps=bps, commission=fee, corporate_actions=corporate_actions,
     )
     return BenchmarkComparison(
         start_session=observations[_MOMENTUM_LOOKBACK].session_date,
@@ -348,6 +387,7 @@ def compare_spy_mean_reversion_benchmarks(
     initial_cash: Money,
     adjustment_bps: Money,
     commission: Money,
+    corporate_actions: Iterable[StockSplit | CashDividend] = (),
 ) -> MeanReversionBenchmarkComparison:
     """Score mean reversion and its benchmarks from the sixth SPY close."""
     observations, capital, bps, fee = _comparison_inputs(
@@ -359,6 +399,7 @@ def compare_spy_mean_reversion_benchmarks(
         (("SPY mean reversion", short_term_mean_reversion),),
         anchor_index=_MEAN_REVERSION_LOOKBACK,
         initial_cash=capital, adjustment_bps=bps, commission=fee,
+        corporate_actions=corporate_actions,
     )
     return MeanReversionBenchmarkComparison(
         start_session=observations[_MEAN_REVERSION_LOOKBACK].session_date,
@@ -379,12 +420,13 @@ def compare_spy_common_window(
     initial_cash: Money,
     adjustment_bps: Money,
     commission: Money,
+    corporate_actions: Iterable[StockSplit | CashDividend] = (),
 ) -> CommonWindowBenchmarkComparison:
     """Compare both fixed SPY strategies from the 64th observed close."""
     return _compare_spy_window(
         metadata, bars, anchor_index=_MOMENTUM_LOOKBACK,
         initial_cash=initial_cash, adjustment_bps=adjustment_bps,
-        commission=commission,
+        commission=commission, corporate_actions=corporate_actions,
     )
 
 
@@ -396,6 +438,7 @@ def _compare_spy_window(
     initial_cash: Money,
     adjustment_bps: Money,
     commission: Money,
+    corporate_actions: Iterable[StockSplit | CashDividend] = (),
 ) -> CommonWindowBenchmarkComparison:
     observations, capital, bps, fee = _comparison_inputs(
         metadata, bars, anchor_index, initial_cash, adjustment_bps, commission,
@@ -407,7 +450,7 @@ def _compare_spy_window(
             ("SPY mean reversion", short_term_mean_reversion),
         ),
         anchor_index=anchor_index, initial_cash=capital,
-        adjustment_bps=bps, commission=fee,
+        adjustment_bps=bps, commission=fee, corporate_actions=corporate_actions,
     )
     return CommonWindowBenchmarkComparison(
         start_session=observations[anchor_index].session_date,

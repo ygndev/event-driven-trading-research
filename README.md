@@ -237,6 +237,10 @@ Outstanding active strategy orders stay visible in each completed comparison. An
 
 The daily-bar simulation assumes full fills at modeled next-open prices and marks open positions at the final close. These tests establish simulation behavior on synthetic prices. They provide no evidence of statistical significance or real-world profitability.
 
+All three SPY comparison functions accept optional `corporate_actions=...` containing existing `StockSplit` and `CashDividend` records. Each call freezes the sequence and passes the same relevant actions, RAW tape, capital, costs and scored boundaries to every strategy, buy-and-hold and cash run. Identity, record validity and duplicate checks cover the entire action stream. Events through the supplied final session must have matching observed bars, with prior-close context for dividends. Valid later-effective events are excluded. Split or ex-dates before the supplied history fail validation.
+
+Splits retain exact share transformations and existing fractional-share and pending-order errors. Dividends use prior-close holdings, accrue receivables in equity, and supply cash on the actual payment date. Cash-only portfolios receive no dividend entitlement. An ex-date within the scored window retains its actual later payment date for audit. That payment cannot alter a prior valuation or scored return.
+
 ## SPY chronological research protocol
 
 Call `evaluate_spy_research_periods(metadata, bars, initial_cash=..., adjustment_bps=..., commission=...)` from `trading_research.chronology`. The predefined research windows have inclusive session-date boundaries.
@@ -247,7 +251,7 @@ Call `evaluate_spy_research_periods(metadata, bars, initial_cash=..., adjustment
 | Validation | 2019-01-01 | 2022-12-31 |
 | Final test | 2023-01-01 | 2025-12-31 |
 
-Each period uses the ordered SPY history through its last available permitted close. The anchor is the first observed close within the period with at least 63 earlier completed observations. If the supplied history starts late, early in-period observations can supply warm-up. A period with no observations or no eligible anchor raises an error. Session dates come from the input, so weekends, holidays, and missing sessions do not generate synthetic observations. The optional `periods` argument accepts explicit chronological, non-overlapping ranges.
+Supply `corporate_actions=...` to `evaluate_spy_research_periods` as well. Each period includes effective actions from warm-up through its final observed session, with later ex-dates and splits excluded before replay. Its ledgers begin independently. Each period uses the ordered SPY history through its last available permitted close. The anchor is the first observed close within the period and requires at least 63 earlier completed observations. Missing pre-period warm-up raises an error by default. The explicit `strict_warmup=False` option retains the delayed-anchor behavior for synthetic experiments. A period with no observations or no eligible anchor raises an error. Session dates come from the input, so weekends, holidays, and missing sessions do not generate synthetic observations. The optional `periods` argument accepts explicit chronological, non-overlapping ranges.
 
 Replay builds indicator history during warm-up. Trading and scoring begin at the same anchor with fresh ledgers and identical uninvested capital across all four portfolios. Momentum keeps its 64th, 85th, 106th observation schedule from the start of the supplied history and stays in cash until an in-period scheduled decision. Mean reversion can act at the anchor using its five-interval history. Buy-and-hold makes its one allocation decision at the anchor, and cash stays uninvested. Orders size at a decision close and can first fill at the next eligible observed opening.
 
@@ -255,7 +259,7 @@ The period ends with a mark at its last observed close. Cash and holdings are re
 
 Each result exposes the configured `period`, `warmup_observation_count`, and `comparison`. The count includes every supplied observation before the anchor. The comparison's `start_session` and `end_session` are the actual scored dates. It retains execution assumptions, order histories, and performance metrics, including undefined values and the reason when CAGR is unavailable. Each period has its own return sample from the intervals after its anchor.
 
-The windows are fixed research choices. Keep the final-test window reserved for evaluation after rules and assumptions are fixed, since using it for selection compromises the holdout. Executable tests use fabricated prices and do not establish economic out-of-sample performance. A RAW declaration alone cannot verify real-market provenance. Historical ETF research also requires defensible treatment of splits and dividends.
+The windows are fixed research choices. Keep the final-test window reserved for evaluation after rules and assumptions are fixed, since using it for selection compromises the holdout. Executable tests use fabricated prices and do not establish economic out-of-sample performance. A RAW declaration alone cannot verify real-market provenance. Historical ETF research requires licensed and independently reconciled inputs. Direct comparison APIs remain caller-supplied research primitives. A bridge from a qualified `PreflightResult` to chronological evaluation is deferred. Synthetic tests establish propagation and accounting boundaries, while real empirical research remains BLOCKED until rights, RAW provenance, sessions, actions and availability evidence are qualified.
 
 ## Historical ETF data preflight
 
